@@ -66,7 +66,7 @@ module! {
     init: kv_module_init,
     exit: kv_module_exit,
     license: "GPL", // 内核模块必须声明 GPL 许可证
-    author: "Your Name",
+    author: "Chiicake",
     description: "Rust KV store for Linux kernel",
     version: "1.0",
 }
