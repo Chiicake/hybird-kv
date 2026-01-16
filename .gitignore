@@ -10,6 +10,9 @@ out/
 *.ipr
 .idea/codeStyles/
 .idea/runConfigurations/
+.marscode
+memo/
+CLAUDE.md
 
 target/
 # Cargo.lock
@@ -50,6 +53,3 @@ $RECYCLE.BIN/
 *.orig
 coverage/
 
-memo/
-
-our target is to make the fastest one-mechian cache module, after we finish the project, we will make a experiment to compare with existing cache module like Redis or Memcached, please update the experiment to the project_design
