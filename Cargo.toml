@@ -1,0 +1,38 @@
+[workspace]
+resolver = "2"
+members = [
+    "hkv-common",
+    "hkv-engine",
+    "hkv-server",
+    "hkv-client",
+    "hkv-kernel",
+    "hkv-gui",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["HybridKV Contributors"]
+license = "MIT"
+
+[workspace.dependencies]
+# Common dependencies
+tokio = { version = "1.35", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+thiserror = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+bytes = "1.5"
+
+# Workspace crates
+hkv-common = { path = "hkv-common" }
+hkv-engine = { path = "hkv-engine" }
+hkv-server = { path = "hkv-server" }
+hkv-client = { path = "hkv-client" }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
