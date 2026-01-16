@@ -13,6 +13,7 @@ out/
 .marscode
 memo/
 CLAUDE.md
+AGENTS.md
 
 target/
 # Cargo.lock
