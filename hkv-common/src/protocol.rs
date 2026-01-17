@@ -47,6 +47,16 @@
 //! +------------+----------+------------+-----------------------+
 //! | header:4B  | count:2B | reserved:2B| results:125B          |
 //! +------------+----------+------------+-----------------------+
+//!
+//! DemoteRequest (262 bytes total):
+//! +------------+---------+
+//! | header:4B  | key:258B|
+//! +------------+---------+
+//!
+//! InvalidateRequest (270 bytes total):
+//! +------------+---------+-----------+
+//! | header:4B  | key:258B| version:8B|
+//! +------------+---------+-----------+
 //! ```
 
 use crate::ioctl::{IoctlCommand, IOCTL_MAGIC};
@@ -286,6 +296,49 @@ impl BatchPromoteResponse {
     }
 }
 
+/// Demote request payload for removing an entry from the kernel cache.
+#[repr(C)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DemoteRequest {
+    /// Common ioctl header (command must be DEMOTE).
+    pub header: IoctlHeader,
+    /// Entry key to remove.
+    pub key: Key,
+}
+
+impl DemoteRequest {
+    /// Builds a demote request for the provided key.
+    pub fn new(key: Key) -> Self {
+        DemoteRequest {
+            header: IoctlHeader::new(IoctlCommand::Demote),
+            key,
+        }
+    }
+}
+
+/// Invalidate request payload for marking a cached entry as stale.
+#[repr(C)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvalidateRequest {
+    /// Common ioctl header (command must be INVALIDATE).
+    pub header: IoctlHeader,
+    /// Entry key to invalidate.
+    pub key: Key,
+    /// New version number for the entry.
+    pub version: Version,
+}
+
+impl InvalidateRequest {
+    /// Builds an invalidate request for the provided key and version.
+    pub fn new(key: Key, version: Version) -> Self {
+        InvalidateRequest {
+            header: IoctlHeader::new(IoctlCommand::Invalidate),
+            key,
+            version,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -371,5 +424,28 @@ mod tests {
     fn test_batch_promote_struct_sizes() {
         assert_eq!(std::mem::size_of::<BatchPromoteRequest>(), 1_304_008);
         assert_eq!(std::mem::size_of::<BatchPromoteResponse>(), 134);
+    }
+
+    #[test]
+    fn test_demote_request_new() {
+        let key = Key::new(b"alpha").unwrap();
+        let request = DemoteRequest::new(key.clone());
+        assert_eq!(request.header, IoctlHeader::new(IoctlCommand::Demote));
+        assert_eq!(request.key, key);
+    }
+
+    #[test]
+    fn test_invalidate_request_new() {
+        let key = Key::new(b"alpha").unwrap();
+        let request = InvalidateRequest::new(key.clone(), Version::new(42));
+        assert_eq!(request.header, IoctlHeader::new(IoctlCommand::Invalidate));
+        assert_eq!(request.key, key);
+        assert_eq!(request.version, Version::new(42));
+    }
+
+    #[test]
+    fn test_demote_invalidate_sizes() {
+        assert_eq!(std::mem::size_of::<DemoteRequest>(), 262);
+        assert_eq!(std::mem::size_of::<InvalidateRequest>(), 270);
     }
 }
