@@ -1,6 +1,6 @@
 //! # Protocol Structures
 //!
-//! Purpose: Define FFI-safe request/response headers for ioctl communication.
+//! Define FFI-safe request/response headers for ioctl communication.
 //!
 //! ## Design Principles
 //!

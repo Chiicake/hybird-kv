@@ -1,6 +1,6 @@
 //! # ioctl.rs - ioctl command definitions for HybridKV kernel module
 //!
-//! Purpose: Define ioctl commands, safety rules, and performance notes for the
+//! Define ioctl commands, safety rules, and performance notes for the
 //! `/dev/hybridkv` character device.
 //!
 //! ## Design Principles
@@ -8,10 +8,7 @@
 //! 2. **Type Safety**: Encode sizes and layouts explicitly across the boundary.
 //! 3. **Safety First**: Validate all input and bound all copies.
 //!
-//! ============================================================================
-//! WHY IOCTL?
-//! ============================================================================
-//!
+//! ## WHY IOCTL?
 //! ioctl (input/output control) is a Linux system call that allows user-space
 //! programs to communicate with device drivers and kernel modules. It's the
 //! standard mechanism for sending commands and control data to drivers.
@@ -52,10 +49,7 @@
 //! - **System calls**: Would require patching the kernel with custom syscalls,
 //!   making it impossible to deploy as a loadable module.
 //!
-//! ============================================================================
-//! HOW IOCTL WORKS
-//! ============================================================================
-//!
+//! ## HOW IOCTL WORKS
 //! Communication flow:
 //!
 //! 1. **User Space** (hkv-client):
@@ -96,9 +90,7 @@
 //!    - ioctl() returns 0 (success) or -1 (error with errno set)
 //!    - User space processes the response
 //!
-//! ============================================================================
-//! IOCTL COMMAND NUMBER ENCODING
-//! ============================================================================
+//! ## IOCTL COMMAND NUMBER ENCODING
 //!
 //! Linux ioctl command numbers are typically 32-bit values encoded as:
 //!
@@ -119,9 +111,7 @@
 //!   CMD_READ is encoded as _IOWR('H', 0, ReadRequest)
 //!   This tells the kernel: "HybridKV command 0, bidirectional data transfer"
 //!
-//! ============================================================================
-//! SAFETY CONSIDERATIONS
-//! ============================================================================
+//! ## SAFETY CONSIDERATIONS
 //!
 //! ioctl crosses the user/kernel boundary, which requires extreme care:
 //!
@@ -150,9 +140,7 @@
 //!    - Avoid holding locks during copy_to_user (may page fault)
 //!    - Design for lock-free reads where possible
 //!
-//! ============================================================================
-//! PERFORMANCE CHARACTERISTICS
-//! ============================================================================
+//! ## PERFORMANCE CHARACTERISTICS
 //!
 //! Typical latencies (on modern x86_64 CPU):
 //!
@@ -167,9 +155,7 @@
 //!
 //! Speedup: ~5-10x for hot keys
 //!
-//! ============================================================================
-//! DESIGN NOTES
-//! ============================================================================
+//! ## DESIGN NOTES
 //!
 //! - Each command has a unique number (0-255)
 //! - Commands follow Linux ioctl conventions
