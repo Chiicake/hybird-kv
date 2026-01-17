@@ -99,7 +99,7 @@ impl Key {
     /// # Examples
     /// ```rust
     /// use hkv_common::{HkvError, MAX_KEY_SIZE};
-    /// use hkv_common::types_copy::Key;
+    /// use hkv_common::types::Key;
     ///
     /// let key = Key::new(b"alpha").expect("valid key");
     /// assert_eq!(key.as_bytes(), b"alpha");
