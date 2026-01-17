@@ -1,11 +1,28 @@
+use std::hash::{Hash, Hasher};
+
 pub const MAX_KEY_SIZE: usize = 256;
 pub const MAX_VALUE_SIZE: usize = 1024;
 
 #[repr(C)]
-#[derive(Clone, Hash, PartialEq, Debug)]
+#[derive(Clone, Debug)]
 pub struct Key {
     len: u16,
     data: [u8; MAX_KEY_SIZE],
+}
+
+impl PartialEq for Key {
+    fn eq(&self, other: &Self) -> bool {
+        self.len == other.len && self.as_bytes() == other.as_bytes()
+    }
+}
+
+impl Eq for Key {}
+
+impl Hash for Key {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.len.hash(state);
+        self.as_bytes().hash(state);
+    }
 }
 
 impl Key {
@@ -20,6 +37,11 @@ impl Key {
         };
         key.data[..data.len()].copy_from_slice(data);
         Some(key)
+    }
+
+    #[inline]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.data[..self.len as usize]
     }
 }
 
@@ -42,4 +64,8 @@ impl Value {
             data: v_data,
         })
     }
+}
+
+#[cfg(test)]
+mod tests {
 }
