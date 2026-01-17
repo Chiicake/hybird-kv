@@ -57,6 +57,16 @@
 //! +------------+---------+-----------+
 //! | header:4B  | key:258B| version:8B|
 //! +------------+---------+-----------+
+//!
+//! StatsRequest (4 bytes total):
+//! +------------+
+//! | header:4B  |
+//! +------------+
+//!
+//! StatsResponse (112 bytes total):
+//! +------------+-----------+-------------+-------------------+
+//! | header:4B  | status:2B | reserved:2B | stats:104B        |
+//! +------------+-----------+-------------+-------------------+
 //! ```
 
 use crate::ioctl::{IoctlCommand, IOCTL_MAGIC};
@@ -339,6 +349,86 @@ impl InvalidateRequest {
     }
 }
 
+/// Snapshot of kernel cache statistics for telemetry.
+///
+/// All fields are plain counters or gauges so user space can render telemetry
+/// without extra parsing or allocations.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CacheStats {
+    /// Total lookup attempts.
+    pub lookups: u64,
+    /// Cache hits.
+    pub hits: u64,
+    /// Cache misses.
+    pub misses: u64,
+    /// Hits on stale entries.
+    pub stale_hits: u64,
+    /// Successful promotions into kernel cache.
+    pub promotions: u64,
+    /// Demotions from kernel cache.
+    pub demotions: u64,
+    /// Evictions due to policy or pressure.
+    pub evictions: u64,
+    /// Invalidations from user-space writes.
+    pub invalidations: u64,
+    /// Current cache memory usage in bytes.
+    pub used_bytes: u64,
+    /// Configured memory limit in bytes.
+    pub max_bytes: u64,
+    /// Current number of cached entries.
+    pub entry_count: u64,
+    /// Lock contention events in the kernel fast path.
+    pub lock_contentions: u64,
+    /// Completed RCU grace periods.
+    pub rcu_grace_periods: u64,
+}
+
+/// Stats request payload for fetching kernel cache telemetry.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StatsRequest {
+    /// Common ioctl header (command must be STATS).
+    pub header: IoctlHeader,
+}
+
+impl StatsRequest {
+    /// Builds a stats request.
+    pub const fn new() -> Self {
+        StatsRequest {
+            header: IoctlHeader::new(IoctlCommand::Stats),
+        }
+    }
+}
+
+/// Stats response payload with a snapshot of cache telemetry.
+///
+/// Uses `STATUS_OK` on success or an `HkvError::code()` value on failure.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StatsResponse {
+    /// Common ioctl header (command must be STATS).
+    pub header: IoctlHeader,
+    /// Status code (0 on success, error code on failure).
+    pub status: u16,
+    /// Reserved for alignment/future flags; must be zero.
+    pub reserved: u16,
+    /// Snapshot of cache statistics.
+    pub stats: CacheStats,
+}
+
+impl StatsResponse {
+    /// Builds a stats response with the provided status and stats snapshot.
+    pub fn new(status: u16, stats: CacheStats) -> Self {
+        StatsResponse {
+            header: IoctlHeader::new(IoctlCommand::Stats),
+            status,
+            reserved: 0,
+            stats,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -447,5 +537,42 @@ mod tests {
     fn test_demote_invalidate_sizes() {
         assert_eq!(std::mem::size_of::<DemoteRequest>(), 262);
         assert_eq!(std::mem::size_of::<InvalidateRequest>(), 270);
+    }
+
+    #[test]
+    fn test_stats_request_new() {
+        let request = StatsRequest::new();
+        assert_eq!(request.header, IoctlHeader::new(IoctlCommand::Stats));
+    }
+
+    #[test]
+    fn test_stats_response_new() {
+        let stats = CacheStats {
+            lookups: 1,
+            hits: 2,
+            misses: 3,
+            stale_hits: 4,
+            promotions: 5,
+            demotions: 6,
+            evictions: 7,
+            invalidations: 8,
+            used_bytes: 9,
+            max_bytes: 10,
+            entry_count: 11,
+            lock_contentions: 12,
+            rcu_grace_periods: 13,
+        };
+        let response = StatsResponse::new(STATUS_OK, stats);
+        assert_eq!(response.header, IoctlHeader::new(IoctlCommand::Stats));
+        assert_eq!(response.status, STATUS_OK);
+        assert_eq!(response.reserved, 0);
+        assert_eq!(response.stats, stats);
+    }
+
+    #[test]
+    fn test_stats_struct_sizes() {
+        assert_eq!(std::mem::size_of::<CacheStats>(), 104);
+        assert_eq!(std::mem::size_of::<StatsRequest>(), 4);
+        assert_eq!(std::mem::size_of::<StatsResponse>(), 112);
     }
 }
