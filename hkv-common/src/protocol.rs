@@ -27,10 +27,20 @@
 //! +------------+-----------+-------------+
 //! | header:4B  | status:2B | value:1026B |
 //! +------------+-----------+-------------+
+//!
+//! PromoteRequest (1304 bytes total):
+//! +------------+---------+-----------+-----------+--------+
+//! | header:4B  | key:258B| value:1026B| version:8B| ttl:8B |
+//! +------------+---------+-----------+-----------+--------+
+//!
+//! PromoteResponse (8 bytes total):
+//! +------------+-----------+-------------+
+//! | header:4B  | status:2B | reserved:2B |
+//! +------------+-----------+-------------+
 //! ```
 
 use crate::ioctl::{IoctlCommand, IOCTL_MAGIC};
-use crate::types::{Key, Value};
+use crate::types::{Key, Ttl, Value, Version};
 
 /// Protocol version for user/kernel ABI compatibility.
 pub const PROTOCOL_VERSION: u8 = 1;
@@ -115,6 +125,64 @@ impl ReadResponse {
     }
 }
 
+/// Promote request payload for inserting a single entry into the kernel cache.
+///
+/// The header identifies the command, while the payload carries only the
+/// minimum metadata needed for cache admission (version + TTL) to keep the
+/// user/kernel copy as small as possible.
+#[repr(C)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromoteRequest {
+    /// Common ioctl header (command must be PROMOTE).
+    pub header: IoctlHeader,
+    /// Entry key to insert.
+    pub key: Key,
+    /// Entry value to insert.
+    pub value: Value,
+    /// Version to associate with the entry.
+    pub version: Version,
+    /// Absolute expiration timestamp for the entry.
+    pub ttl: Ttl,
+}
+
+impl PromoteRequest {
+    /// Builds a promote request for the provided entry data.
+    pub fn new(key: Key, value: Value, version: Version, ttl: Ttl) -> Self {
+        PromoteRequest {
+            header: IoctlHeader::new(IoctlCommand::Promote),
+            key,
+            value,
+            version,
+            ttl,
+        }
+    }
+}
+
+/// Promote response payload indicating success or failure.
+///
+/// Uses `STATUS_OK` on success or an `HkvError::code()` value on failure.
+#[repr(C)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromoteResponse {
+    /// Common ioctl header (command must be PROMOTE).
+    pub header: IoctlHeader,
+    /// Status code (0 on success, error code on failure).
+    pub status: u16,
+    /// Reserved for future flags; must be zero.
+    pub reserved: u16,
+}
+
+impl PromoteResponse {
+    /// Builds a promote response with an explicit status.
+    pub fn new(status: u16) -> Self {
+        PromoteResponse {
+            header: IoctlHeader::new(IoctlCommand::Promote),
+            status,
+            reserved: 0,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,5 +222,31 @@ mod tests {
     fn test_read_struct_sizes() {
         assert_eq!(std::mem::size_of::<ReadRequest>(), 262);
         assert_eq!(std::mem::size_of::<ReadResponse>(), 1032);
+    }
+
+    #[test]
+    fn test_promote_request_new() {
+        let key = Key::new(b"alpha").unwrap();
+        let value = Value::new(b"beta").unwrap();
+        let request = PromoteRequest::new(key.clone(), value.clone(), Version::ZERO, Ttl::INFINITE);
+        assert_eq!(request.header, IoctlHeader::new(IoctlCommand::Promote));
+        assert_eq!(request.key, key);
+        assert_eq!(request.value, value);
+        assert_eq!(request.version, Version::ZERO);
+        assert_eq!(request.ttl, Ttl::INFINITE);
+    }
+
+    #[test]
+    fn test_promote_response_new() {
+        let response = PromoteResponse::new(STATUS_OK);
+        assert_eq!(response.header, IoctlHeader::new(IoctlCommand::Promote));
+        assert_eq!(response.status, STATUS_OK);
+        assert_eq!(response.reserved, 0);
+    }
+
+    #[test]
+    fn test_promote_struct_sizes() {
+        assert_eq!(std::mem::size_of::<PromoteRequest>(), 1304);
+        assert_eq!(std::mem::size_of::<PromoteResponse>(), 8);
     }
 }
