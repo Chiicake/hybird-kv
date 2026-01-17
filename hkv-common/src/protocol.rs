@@ -37,6 +37,16 @@
 //! +------------+-----------+-------------+
 //! | header:4B  | status:2B | reserved:2B |
 //! +------------+-----------+-------------+
+//!
+//! BatchPromoteRequest (1304008 bytes total):
+//! +------------+----------+------------+-----------------------+
+//! | header:4B  | count:2B | reserved:2B| entries:1304000B      |
+//! +------------+----------+------------+-----------------------+
+//!
+//! BatchPromoteResponse (134 bytes total):
+//! +------------+----------+------------+-----------------------+
+//! | header:4B  | count:2B | reserved:2B| results:125B          |
+//! +------------+----------+------------+-----------------------+
 //! ```
 
 use crate::ioctl::{IoctlCommand, IOCTL_MAGIC};
@@ -47,6 +57,12 @@ pub const PROTOCOL_VERSION: u8 = 1;
 
 /// Status code indicating success in ioctl responses.
 pub const STATUS_OK: u16 = 0;
+
+/// Maximum number of entries in a batch promote request.
+pub const MAX_BATCH_SIZE: usize = 1000;
+
+/// Result bitmap size for batch responses (1 bit per entry).
+pub const BATCH_RESULT_BYTES: usize = (MAX_BATCH_SIZE + 7) / 8;
 
 /// Common header prepended to ioctl request/response payloads.
 ///
@@ -183,6 +199,93 @@ impl PromoteResponse {
     }
 }
 
+/// Single batch promote entry (payload-only).
+///
+/// This keeps the batch payload compact by avoiding per-entry headers.
+#[repr(C)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchPromoteEntry {
+    /// Entry key to insert.
+    pub key: Key,
+    /// Entry value to insert.
+    pub value: Value,
+    /// Version to associate with the entry.
+    pub version: Version,
+    /// Absolute expiration timestamp for the entry.
+    pub ttl: Ttl,
+}
+
+impl BatchPromoteEntry {
+    /// Builds a batch entry for the provided data.
+    pub fn new(key: Key, value: Value, version: Version, ttl: Ttl) -> Self {
+        BatchPromoteEntry {
+            key,
+            value,
+            version,
+            ttl,
+        }
+    }
+}
+
+/// Batch promote request payload for inserting multiple entries.
+///
+/// Uses the header+payload pattern to amortize syscall overhead while
+/// preserving a flat, FFI-friendly layout.
+#[repr(C)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchPromoteRequest {
+    /// Common ioctl header (command must be BATCH_PROMOTE).
+    pub header: IoctlHeader,
+    /// Number of valid entries in the batch (<= MAX_BATCH_SIZE).
+    pub count: u16,
+    /// Reserved for alignment/future flags; must be zero.
+    pub reserved: u16,
+    /// Fixed-capacity entry array (only first `count` are valid).
+    pub entries: [BatchPromoteEntry; MAX_BATCH_SIZE],
+}
+
+impl BatchPromoteRequest {
+    /// Builds a batch promote request for the provided entries.
+    pub fn new(entries: [BatchPromoteEntry; MAX_BATCH_SIZE], count: u16) -> Self {
+        debug_assert!(count as usize <= MAX_BATCH_SIZE);
+        BatchPromoteRequest {
+            header: IoctlHeader::new(IoctlCommand::BatchPromote),
+            count,
+            reserved: 0,
+            entries,
+        }
+    }
+}
+
+/// Batch promote response payload with per-entry success bitmap.
+///
+/// Uses a bitmap pattern: bit=1 indicates success, bit=0 indicates failure.
+#[repr(C)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchPromoteResponse {
+    /// Common ioctl header (command must be BATCH_PROMOTE).
+    pub header: IoctlHeader,
+    /// Number of valid results (matches request count).
+    pub count: u16,
+    /// Reserved for alignment/future flags; must be zero.
+    pub reserved: u16,
+    /// Success bitmap (1 bit per entry, LSB-first within each byte).
+    pub results: [u8; BATCH_RESULT_BYTES],
+}
+
+impl BatchPromoteResponse {
+    /// Builds an empty batch promote response for the given count.
+    pub fn new(count: u16) -> Self {
+        debug_assert!(count as usize <= MAX_BATCH_SIZE);
+        BatchPromoteResponse {
+            header: IoctlHeader::new(IoctlCommand::BatchPromote),
+            count,
+            reserved: 0,
+            results: [0u8; BATCH_RESULT_BYTES],
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,5 +351,25 @@ mod tests {
     fn test_promote_struct_sizes() {
         assert_eq!(std::mem::size_of::<PromoteRequest>(), 1304);
         assert_eq!(std::mem::size_of::<PromoteResponse>(), 8);
+    }
+
+    #[test]
+    fn test_batch_promote_entry_size() {
+        assert_eq!(std::mem::size_of::<BatchPromoteEntry>(), 1304);
+    }
+
+    #[test]
+    fn test_batch_promote_response_new() {
+        let response = BatchPromoteResponse::new(10);
+        assert_eq!(response.header, IoctlHeader::new(IoctlCommand::BatchPromote));
+        assert_eq!(response.count, 10);
+        assert_eq!(response.reserved, 0);
+        assert_eq!(response.results.len(), BATCH_RESULT_BYTES);
+    }
+
+    #[test]
+    fn test_batch_promote_struct_sizes() {
+        assert_eq!(std::mem::size_of::<BatchPromoteRequest>(), 1_304_008);
+        assert_eq!(std::mem::size_of::<BatchPromoteResponse>(), 134);
     }
 }
