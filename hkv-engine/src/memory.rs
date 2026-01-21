@@ -18,6 +18,22 @@
 //! 3. **Arc-backed Buffers**: Values are `Arc<[u8]>` to avoid extra copies.
 //! 4. **TTL Fast Path**: Expiration is checked on access for O(1) reads.
 //! 5. **Strategy Pattern**: Implements `KVEngine` to keep callers decoupled.
+//!
+//! ## Structure Overview
+//!
+//! The engine wires shards, locks, and LRU nodes together as follows:
+//!
+//! ```text
+//! MemoryEngine
+//!   └── shards: Vec<Shard>
+//!         └── Shard
+//!               └── inner: RwLock<ShardInner>
+//!                     ├── map: HashMap<Arc<[u8]>, usize>
+//!                     ├── nodes: Vec<Option<Node>>
+//!                     ├── free: Vec<usize>
+//!                     └── head/tail: LRU indices
+//!                           └── Node { key, value, expires_at, size, prev, next }
+//! ```
 
 use std::hash::{BuildHasher, Hasher};
 use std::sync::{
