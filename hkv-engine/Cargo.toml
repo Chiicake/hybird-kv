@@ -4,3 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+hkv-common = { path = "../hkv-common" }
+ahash = "0.8"
+hashbrown = "0.14"
+parking_lot = "0.12"
