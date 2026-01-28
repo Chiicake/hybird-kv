@@ -3,6 +3,34 @@
 //! Purpose: Expose a compact, blocking API for issuing Redis-compatible
 //! commands to the HybridKV server over RESP2.
 //!
+//! ## Usage
+//! ```no_run
+//! use hkv_client::{ClientConfig, KVClient};
+//! use std::time::Duration;
+//!
+//! let client = KVClient::connect("127.0.0.1:6379").expect("connect");
+//! client.set(b"user:1", b"alice").expect("set");
+//! let value = client.get(b"user:1").expect("get");
+//! assert_eq!(value.as_deref(), Some(b"alice".as_slice()));
+//! client.expire(b"user:1", Duration::from_secs(60)).expect("expire");
+//!
+//! let config = ClientConfig {
+//!     addr: "127.0.0.1:6379".to_string(),
+//!     max_idle: 4,
+//!     max_total: 8,
+//!     read_timeout: Some(Duration::from_secs(1)),
+//!     write_timeout: Some(Duration::from_secs(1)),
+//!     connect_timeout: Some(Duration::from_secs(1)),
+//! };
+//! let client = KVClient::with_config(config).expect("connect");
+//! let _ = client.ping(None).expect("ping");
+//! ```
+//!
+//! ## Connection Pooling Behavior
+//! - Each request borrows one connection, performs one round-trip, then returns it.
+//! - If the pool hits `max_total`, callers get a `PoolExhausted` error immediately.
+//! - Connections that hit IO/protocol errors are discarded to avoid reusing bad state.
+//!
 //! ## Design Principles
 //! 1. **Facade Pattern**: `KVClient` hides pooling and protocol details.
 //! 2. **Borrow-Friendly API**: Accept `&[u8]` to avoid unnecessary copies.
@@ -131,6 +159,8 @@ impl KVClient {
     /// Fetches a value by key.
     ///
     /// Returns `Ok(None)` when the key is missing.
+    ///
+    /// The server response is expected to be a bulk string or null bulk string.
     pub fn get(&self, key: &[u8]) -> ClientResult<Option<Vec<u8>>> {
         let mut conn = self.pool.acquire()?;
         match conn.exec(&[b"GET", key])? {
@@ -141,6 +171,8 @@ impl KVClient {
     }
 
     /// Sets a value for a key without expiration.
+    ///
+    /// Uses RESP2 `SET key value` and expects a simple string response.
     pub fn set(&self, key: &[u8], value: &[u8]) -> ClientResult<()> {
         let mut conn = self.pool.acquire()?;
         match conn.exec(&[b"SET", key, value])? {
@@ -151,6 +183,8 @@ impl KVClient {
     }
 
     /// Sets a value and attaches an expiration in seconds.
+    ///
+    /// Uses RESP2 `SET key value EX seconds`. TTL seconds are encoded without heap allocations.
     pub fn set_with_ttl(&self, key: &[u8], value: &[u8], ttl: Duration) -> ClientResult<()> {
         let (seconds, len) = encode_u64(ttl.as_secs());
         let mut conn = self.pool.acquire()?;
@@ -162,6 +196,8 @@ impl KVClient {
     }
 
     /// Deletes a key. Returns true when a key was removed.
+    ///
+    /// `DEL` returns an integer count. Non-zero maps to true.
     pub fn delete(&self, key: &[u8]) -> ClientResult<bool> {
         let mut conn = self.pool.acquire()?;
         match conn.exec(&[b"DEL", key])? {
@@ -172,6 +208,8 @@ impl KVClient {
     }
 
     /// Sets a time-to-live on a key. Returns true when the TTL was set.
+    ///
+    /// Mirrors Redis `EXPIRE` semantics: 1 when applied, 0 when missing.
     pub fn expire(&self, key: &[u8], ttl: Duration) -> ClientResult<bool> {
         let (seconds, len) = encode_u64(ttl.as_secs());
         let mut conn = self.pool.acquire()?;
@@ -183,6 +221,8 @@ impl KVClient {
     }
 
     /// Returns TTL status for a key.
+    ///
+    /// Converts Redis TTL conventions (-2 missing, -1 no expiry) into `ClientTtl`.
     pub fn ttl(&self, key: &[u8]) -> ClientResult<ClientTtl> {
         let mut conn = self.pool.acquire()?;
         match conn.exec(&[b"TTL", key])? {
@@ -197,6 +237,8 @@ impl KVClient {
     }
 
     /// Pings the server. Returns the raw response payload.
+    ///
+    /// A payload triggers bulk string echo; otherwise a simple "PONG".
     pub fn ping(&self, payload: Option<&[u8]>) -> ClientResult<Vec<u8>> {
         let mut conn = self.pool.acquire()?;
         let response = match payload {
@@ -212,6 +254,8 @@ impl KVClient {
     }
 
     /// Fetches server INFO output.
+    ///
+    /// Returns the raw bulk payload; parsing is left to the caller.
     pub fn info(&self) -> ClientResult<Vec<u8>> {
         let mut conn = self.pool.acquire()?;
         match conn.exec(&[b"INFO"])? {
