@@ -3,6 +3,17 @@
 //! Purpose: Encode client commands and parse server responses without
 //! external dependencies, keeping allocations under control.
 //!
+//! ## RESP Coverage
+//! - Supports: Simple strings, errors, integers, bulk strings (including null),
+//!   and arrays.
+//! - The client expects server responses to follow RESP2 (CRLF line endings).
+//! - Bulk strings are treated as raw bytes (binary-safe).
+//!
+//! ## Performance Notes
+//! - Encoding uses a caller-provided buffer to avoid per-command allocations.
+//! - Parsing reuses a caller-provided line buffer to avoid repeated growth.
+//! - Integer parsing is saturating and rejects non-digit bytes to fail fast.
+//!
 //! ## Design Principles
 //! 1. **State-Free Parsing**: Responses are parsed top-down with minimal state.
 //! 2. **Buffer Reuse**: Caller provides buffers to avoid per-call allocations.
@@ -30,6 +41,7 @@ pub enum RespValue {
 
 /// Encodes a RESP2 array command into the provided buffer.
 pub fn encode_command(args: &[&[u8]], out: &mut Vec<u8>) {
+    // RESP arrays: `*<count>\r\n$<len>\r\n<data>\r\n...`
     out.push(b'*');
     push_usize(out, args.len());
     out.extend_from_slice(b"\r\n");
