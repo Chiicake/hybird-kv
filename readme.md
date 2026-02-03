@@ -1,6 +1,4 @@
 # HybridKV
-<img src="assets/hybird%20kv.png" alt="hybird kv.png" width="50%">
-
 HybridKV is a two-tier key-value system that keeps the authoritative KV engine in user space while offering a kernel-resident hot-key cache for low-latency reads.
 
 HybridKV frameworkizes the kernel cache mechanism: the kernel provides a general data plane (object storage, indexing, concurrency-optimized read path, invalidation/versioning, memory budgeting, telemetry), and all cache decision logic is implemented as pluggable policies, deliver fast read paths for highly skewed workloads without pushing full KV semantics into the kernel.
