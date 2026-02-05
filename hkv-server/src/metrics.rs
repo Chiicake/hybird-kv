@@ -14,7 +14,7 @@
 //!   server fast; wiring and sampling policy are left to the caller.
 //! - Bucket boundaries are expressed in microseconds and can be tuned later.
 
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 /// Default latency bucket boundaries in microseconds.
@@ -98,7 +98,8 @@ impl Metrics {
     /// 1. Increment `requests_total`.
     /// 2. Increment `inflight`.
     pub fn record_request_start(&self) {
-        todo!("atomic increment requests_total and inflight");
+        self.requests_total.fetch_add(1, Ordering::Relaxed);
+        self.inflight.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Records the end of a request.
