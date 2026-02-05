@@ -65,9 +65,9 @@ impl Metrics {
     /// Creates a new metrics aggregator with the default latency buckets.
     pub fn new() -> Self {
         Metrics{
-            requests_total: 0.into(),
-            errors_total: 0.into(),
-            inflight: 0.into(),
+            requests_total: AtomicU64::new(0),
+            errors_total: AtomicU64::new(0),
+            inflight: AtomicU64::new(0),
             latency: LatencyHistogram::new(DEFAULT_LATENCY_BUCKETS_US.to_vec()),
         }
     }
@@ -80,10 +80,10 @@ impl Metrics {
     /// **Output**: a `Metrics` instance configured with those buckets.
     pub fn with_latency_buckets(bounds_us: Vec<u64>) -> Self {
         Metrics{
-            requests_total: 0.into(),
-            errors_total: 0.into(),
-            inflight: 0.into(),
-            latency: LatencyHistogram::new(bounds_us.to_vec()),
+            requests_total: AtomicU64::new(0),
+            errors_total: AtomicU64::new(0),
+            inflight: AtomicU64::new(0),
+            latency: LatencyHistogram::new(bounds_us),
         }
     }
 
