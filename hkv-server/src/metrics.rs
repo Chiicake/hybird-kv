@@ -98,13 +98,6 @@ impl Metrics {
     /// Records the end of a request.
     ///
     /// Call this on completion to decrement in-flight and capture latency.
-    ///
-    /// **Input**: `latency` measured for the request.
-    /// **Output**: none (side-effects only).
-    ///
-    /// **Logic**:
-    /// 1. Decrement `inflight`.
-    /// 2. Record the latency into the histogram.
     pub fn record_request_end(&self, latency: Duration) {
         self.inflight.fetch_sub(1, Ordering::Relaxed);
         self.latency.record(latency);
@@ -116,14 +109,6 @@ impl Metrics {
     }
 
     /// Returns a snapshot of all counters and histogram buckets.
-    ///
-    /// **Input**: none.
-    /// **Output**: `MetricsSnapshot` with point-in-time values.
-    ///
-    /// **Logic**:
-    /// 1. Load atomic counters.
-    /// 2. Ask the histogram for a snapshot.
-    /// 3. Return a struct with those values.
     pub fn snapshot(&self) -> MetricsSnapshot {
         MetricsSnapshot {
             requests_total: self.requests_total.load(Ordering::Relaxed),
@@ -148,45 +133,49 @@ pub struct LatencyHistogram {
 
 impl LatencyHistogram {
     /// Creates a histogram with explicit bucket boundaries (microseconds).
-    ///
-    /// **Input**: `bounds_us` sorted ascending.
-    /// **Output**: histogram with `bounds_us.len() + 1` buckets (last is overflow).
-    ///
-    /// **Logic**:
-    /// 1. Allocate a vector of `AtomicU64` sized to `bounds_us.len() + 1`.
-    /// 2. Zero `samples` and `sum_us`.
     pub fn new(bounds_us: Vec<u64>) -> Self {
-        let _ = bounds_us;
-        todo!("initialize histogram buckets and counters");
+        let mut buckets = Vec::with_capacity(bounds_us.len() + 1);
+        for _ in 0..=bounds_us.len() {
+            buckets.push(AtomicU64::new(0));
+        }
+
+        LatencyHistogram {
+            bounds_us,
+            buckets,
+            sum_us: AtomicU64::new(0),
+            samples: AtomicU64::new(0),
+        }
     }
 
     /// Records a latency measurement into the histogram.
     ///
     /// Caller passes `Duration` to avoid unit ambiguity.
-    ///
-    /// **Input**: latency as `Duration`.
-    /// **Output**: none (side-effects only).
-    ///
-    /// **Logic**:
-    /// 1. Convert to microseconds.
-    /// 2. Increment `samples` and add to `sum_us`.
-    /// 3. Find the first bucket where `micros <= bound`, otherwise use overflow.
-    /// 4. Increment that bucket atomically.
     pub fn record(&self, latency: Duration) {
-        let _ = latency;
-        todo!("record latency into buckets");
+        let micros = latency.as_micros() as u64;
+        self.samples.fetch_add(1, Ordering::Relaxed);
+        self.sum_us.fetch_add(micros, Ordering::Relaxed);
+
+        let mut bucket_idx = self.bounds_us.len();
+        for (i, &bound) in self.bounds_us.iter().enumerate() {
+            if micros <= bound {
+                bucket_idx = i;
+                break;
+            }
+        }
+        self.buckets[bucket_idx].fetch_add(1, Ordering::Relaxed);
     }
 
     /// Returns a point-in-time snapshot of the histogram.
-    ///
-    /// **Input**: none.
-    /// **Output**: `LatencySnapshot` with bucket counts, total samples, and sum.
-    ///
-    /// **Logic**:
-    /// 1. Load each bucket counter into a `Vec<u64>`.
-    /// 2. Load `samples` and `sum_us`.
-    /// 3. Clone bucket bounds into the snapshot.
     pub fn snapshot(&self) -> LatencySnapshot {
-        todo!("collect histogram snapshot");
+        let buckets: Vec<u64> = self.buckets.iter()
+            .map(|b| b.load(Ordering::Relaxed))
+            .collect();
+
+        LatencySnapshot {
+            bounds_us: self.bounds_us.clone(),
+            buckets,
+            samples: self.samples.load(Ordering::Relaxed),
+            sum_us: self.sum_us.load(Ordering::Relaxed),
+        }
     }
 }
