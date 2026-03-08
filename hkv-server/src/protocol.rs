@@ -29,10 +29,14 @@ pub struct RespParser {
     bulk_len: usize,
 }
 
+/// Parser states for the RESP2 array of bulk strings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ParseState {
+    /// Expecting the array length line (`*<count>\r\n`).
     ArrayLen,
+    /// Expecting a bulk string length line (`$<len>\r\n`).
     BulkLen,
+    /// Expecting the bulk string data (`<data>\r\n`).
     BulkData,
 }
 
