@@ -15,7 +15,10 @@ use hkv_engine::{KVEngine, MemoryEngine, TtlStatus};
 use crate::protocol::{RespError, RespParser};
 
 /// Handles a single TCP client connection.
-pub async fn handle_connection(stream: TcpStream, engine: Arc<MemoryEngine>) -> std::io::Result<()> {
+pub async fn handle_connection(
+    stream: TcpStream,
+    engine: Arc<MemoryEngine>,
+) -> std::io::Result<()> {
     let mut stream = stream;
     let mut buffer = BytesMut::with_capacity(8 * 1024);
     let mut parser = RespParser::new();
@@ -119,7 +122,10 @@ fn handle_set(args: &[Vec<u8>], engine: &MemoryEngine) -> Vec<u8> {
             return resp_error("engine error");
         }
 
-        if engine.expire(&args[1], Duration::from_secs(seconds)).is_err() {
+        if engine
+            .expire(&args[1], Duration::from_secs(seconds))
+            .is_err()
+        {
             return resp_error("engine error");
         }
 
@@ -220,7 +226,10 @@ fn resp_null() -> Vec<u8> {
 }
 
 fn eq_ignore_ascii_case(a: &[u8], b: &[u8]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_ascii_lowercase() == y.to_ascii_lowercase())
+    a.len() == b.len()
+        && a.iter()
+            .zip(b)
+            .all(|(x, y)| x.to_ascii_lowercase() == y.to_ascii_lowercase())
 }
 
 fn parse_u64(arg: &[u8]) -> Result<u64, Vec<u8>> {

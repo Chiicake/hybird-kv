@@ -495,12 +495,7 @@ pub struct ConfigRequest {
 
 impl ConfigRequest {
     /// Builds a config request with explicit values.
-    pub fn new(
-        max_bytes: u64,
-        max_entries: u64,
-        high_watermark: u32,
-        low_watermark: u32,
-    ) -> Self {
+    pub fn new(max_bytes: u64, max_entries: u64, high_watermark: u32, low_watermark: u32) -> Self {
         ConfigRequest {
             header: IoctlHeader::new(IoctlCommand::Config),
             max_bytes,
@@ -606,7 +601,10 @@ mod tests {
     #[test]
     fn test_batch_promote_response_new() {
         let response = BatchPromoteResponse::new(10);
-        assert_eq!(response.header, IoctlHeader::new(IoctlCommand::BatchPromote));
+        assert_eq!(
+            response.header,
+            IoctlHeader::new(IoctlCommand::BatchPromote)
+        );
         assert_eq!(response.count, 10);
         assert_eq!(response.reserved, 0);
         assert_eq!(response.results.len(), BATCH_RESULT_BYTES);

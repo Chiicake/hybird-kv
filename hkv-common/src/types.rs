@@ -473,12 +473,7 @@ pub struct Entry {
 impl Entry {
     /// Creates a new entry with current timestamp
     pub fn new(key: Key, value: Value, version: Version, ttl: Ttl) -> Self {
-        let metadata = EntryMetadata::new(
-            version,
-            ttl,
-            key.len() as u16,
-            value.len() as u16,
-        );
+        let metadata = EntryMetadata::new(version, ttl, key.len() as u16, value.len() as u16);
 
         Entry {
             key,
@@ -619,12 +614,7 @@ mod tests {
 
     #[test]
     fn test_entry_metadata() {
-        let mut metadata = EntryMetadata::new(
-            Version::new(5),
-            Ttl::INFINITE,
-            10,
-            20,
-        );
+        let mut metadata = EntryMetadata::new(Version::new(5), Ttl::INFINITE, 10, 20);
 
         assert_eq!(metadata.version.get(), 5);
         assert_eq!(metadata.key_len, 10);

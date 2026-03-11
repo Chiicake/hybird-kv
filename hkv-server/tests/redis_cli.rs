@@ -22,10 +22,7 @@ use hkv_engine::MemoryEngine;
 use hkv_server::server;
 
 fn redis_cli_available() -> bool {
-    Command::new("redis-cli")
-        .arg("--version")
-        .output()
-        .is_ok()
+    Command::new("redis-cli").arg("--version").output().is_ok()
 }
 
 fn run_redis_cli(port: u16, args: &[&str]) -> std::io::Result<String> {

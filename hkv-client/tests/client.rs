@@ -5,7 +5,10 @@ use std::time::Duration;
 
 use hkv_client::{ClientConfig, ClientTtl, KVClient};
 
-fn spawn_server(expected_commands: usize, handler: fn(usize, Vec<Vec<u8>>, &mut TcpStream)) -> String {
+fn spawn_server(
+    expected_commands: usize,
+    handler: fn(usize, Vec<Vec<u8>>, &mut TcpStream),
+) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().expect("addr").to_string();
 
@@ -24,16 +27,24 @@ fn spawn_server(expected_commands: usize, handler: fn(usize, Vec<Vec<u8>>, &mut 
 
 fn read_command(reader: &mut BufReader<TcpStream>) -> std::io::Result<Vec<Vec<u8>>> {
     let mut line = Vec::new();
-    read_line(reader, &mut line)?.ok_or_else(|| std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "eof"))?;
+    read_line(reader, &mut line)?
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "eof"))?;
     if line.first() != Some(&b'*') {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "expected array"));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "expected array",
+        ));
     }
     let count = parse_usize(&line[1..])?;
     let mut args = Vec::with_capacity(count);
     for _ in 0..count {
-        read_line(reader, &mut line)?.ok_or_else(|| std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "eof"))?;
+        read_line(reader, &mut line)?
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "eof"))?;
         if line.first() != Some(&b'$') {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "expected bulk"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "expected bulk",
+            ));
         }
         let len = parse_usize(&line[1..])?;
         let mut data = vec![0u8; len];
@@ -41,7 +52,10 @@ fn read_command(reader: &mut BufReader<TcpStream>) -> std::io::Result<Vec<Vec<u8
         let mut crlf = [0u8; 2];
         reader.read_exact(&mut crlf)?;
         if crlf != [b'\r', b'\n'] {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "missing crlf"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "missing crlf",
+            ));
         }
         args.push(data);
     }
@@ -55,7 +69,10 @@ fn read_line(reader: &mut BufReader<TcpStream>, buf: &mut Vec<u8>) -> std::io::R
         return Ok(None);
     }
     if buf.len() < 2 || buf[buf.len() - 2] != b'\r' {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid line"));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "invalid line",
+        ));
     }
     buf.truncate(buf.len() - 2);
     Ok(Some(()))
@@ -63,12 +80,18 @@ fn read_line(reader: &mut BufReader<TcpStream>, buf: &mut Vec<u8>) -> std::io::R
 
 fn parse_usize(data: &[u8]) -> std::io::Result<usize> {
     if data.is_empty() {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "empty"));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "empty",
+        ));
     }
     let mut value = 0usize;
     for &b in data {
         if b < b'0' || b > b'9' {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "digit"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "digit",
+            ));
         }
         value = value.saturating_mul(10).saturating_add((b - b'0') as usize);
     }

@@ -55,7 +55,10 @@ pub fn encode_command(args: &[&[u8]], out: &mut Vec<u8>) {
 }
 
 /// Reads one RESP value from the buffered reader.
-pub fn read_response<R: BufRead>(reader: &mut R, line_buf: &mut Vec<u8>) -> ClientResult<RespValue> {
+pub fn read_response<R: BufRead>(
+    reader: &mut R,
+    line_buf: &mut Vec<u8>,
+) -> ClientResult<RespValue> {
     read_line(reader, line_buf)?;
     if line_buf.is_empty() {
         return Err(ClientError::Protocol);
@@ -149,11 +152,7 @@ fn parse_i64(data: &[u8]) -> ClientResult<i64> {
         idx += 1;
     }
 
-    if negative {
-        Ok(-value)
-    } else {
-        Ok(value)
-    }
+    if negative { Ok(-value) } else { Ok(value) }
 }
 
 fn push_usize(out: &mut Vec<u8>, mut value: usize) {

@@ -488,7 +488,9 @@ impl KVEngine for MemoryEngine {
         let new_size = Self::entry_size(key_arc.len(), value_arc.len());
 
         if let Some(&idx) = inner.map.get(key_arc.as_ref()) {
-            let remove = inner.nodes[idx].as_ref().map(|node| node.is_expired(Instant::now()));
+            let remove = inner.nodes[idx]
+                .as_ref()
+                .map(|node| node.is_expired(Instant::now()));
             if remove.unwrap_or(false) {
                 if let Some(size) = inner.remove_idx(idx) {
                     self.used_bytes.fetch_sub(size, Ordering::Relaxed);

@@ -64,7 +64,7 @@ pub struct Metrics {
 impl Metrics {
     /// Creates a new metrics aggregator with the default latency buckets.
     pub fn new() -> Self {
-        Metrics{
+        Metrics {
             requests_total: AtomicU64::new(0),
             errors_total: AtomicU64::new(0),
             inflight: AtomicU64::new(0),
@@ -79,7 +79,7 @@ impl Metrics {
     /// **Input**: `bounds_us` (ascending microsecond thresholds).
     /// **Output**: a `Metrics` instance configured with those buckets.
     pub fn with_latency_buckets(bounds_us: Vec<u64>) -> Self {
-        Metrics{
+        Metrics {
             requests_total: AtomicU64::new(0),
             errors_total: AtomicU64::new(0),
             inflight: AtomicU64::new(0),
@@ -167,7 +167,9 @@ impl LatencyHistogram {
 
     /// Returns a point-in-time snapshot of the histogram.
     pub fn snapshot(&self) -> LatencySnapshot {
-        let buckets: Vec<u64> = self.buckets.iter()
+        let buckets: Vec<u64> = self
+            .buckets
+            .iter()
             .map(|b| b.load(Ordering::Relaxed))
             .collect();
 

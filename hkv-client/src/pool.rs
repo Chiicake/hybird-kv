@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::client::{ClientError, ClientResult};
-use crate::resp::{encode_command, read_response, RespValue};
+use crate::resp::{RespValue, encode_command, read_response};
 
 /// Pool configuration for the sync client.
 #[derive(Debug, Clone)]
@@ -197,7 +197,10 @@ impl Connection {
 }
 
 fn connect_stream(config: &PoolConfig) -> ClientResult<TcpStream> {
-    let addr: SocketAddr = config.addr.parse().map_err(|_| ClientError::InvalidAddress)?;
+    let addr: SocketAddr = config
+        .addr
+        .parse()
+        .map_err(|_| ClientError::InvalidAddress)?;
     let stream = match config.connect_timeout {
         Some(timeout) => TcpStream::connect_timeout(&addr, timeout)?,
         None => TcpStream::connect(addr)?,

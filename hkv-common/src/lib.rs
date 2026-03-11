@@ -2,13 +2,13 @@
 //
 // This crate defines the ioctl interface for user/kernel communication
 
-pub mod ioctl;
 pub mod error;
-pub mod types;
+pub mod ioctl;
 pub mod protocol;
+pub mod types;
 
 // Re-export for convenience
-pub use ioctl::*;
 pub use error::*;
-pub use types::*;
+pub use ioctl::*;
 pub use protocol::*;
+pub use types::*;

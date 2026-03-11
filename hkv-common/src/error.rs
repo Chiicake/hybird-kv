@@ -76,10 +76,9 @@ impl HkvError {
     /// Returns the coarse category of the error.
     pub const fn category(self) -> HkvErrorCategory {
         match self {
-            Self::InvalidInput
-            | Self::NotFound
-            | Self::KeyTooLong
-            | Self::ValueTooLong => HkvErrorCategory::Client,
+            Self::InvalidInput | Self::NotFound | Self::KeyTooLong | Self::ValueTooLong => {
+                HkvErrorCategory::Client
+            }
             Self::OutOfMemory | Self::CapacityExceeded | Self::InternalError => {
                 HkvErrorCategory::Server
             }
@@ -146,7 +145,10 @@ mod tests {
         assert_eq!(HkvError::InvalidInput.category(), HkvErrorCategory::Client);
         assert_eq!(HkvError::OutOfMemory.category(), HkvErrorCategory::Server);
         assert_eq!(HkvError::Busy.category(), HkvErrorCategory::Transient);
-        assert_eq!(HkvError::VersionMismatch.category(), HkvErrorCategory::Protocol);
+        assert_eq!(
+            HkvError::VersionMismatch.category(),
+            HkvErrorCategory::Protocol
+        );
     }
 
     #[test]
