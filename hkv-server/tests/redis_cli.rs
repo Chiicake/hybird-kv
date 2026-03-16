@@ -19,6 +19,7 @@ use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
 use hkv_engine::MemoryEngine;
+use hkv_server::metrics::Metrics;
 use hkv_server::server;
 
 fn redis_cli_available() -> bool {
@@ -46,29 +47,17 @@ async fn spawn_test_server() -> std::io::Result<(SocketAddr, oneshot::Sender<()>
     let addr = listener.local_addr()?;
 
     let engine = Arc::new(MemoryEngine::new());
+    let metrics = Arc::new(Metrics::new());
     let expirer = engine.start_expirer(Duration::from_millis(50));
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
     tokio::spawn(async move {
-        let mut shutdown_rx = shutdown_rx;
         let mut expirer = Some(expirer);
-
-        loop {
-            tokio::select! {
-                _ = &mut shutdown_rx => break,
-                accept = listener.accept() => {
-                    let (stream, _) = match accept {
-                        Ok(value) => value,
-                        Err(_) => break,
-                    };
-                    let engine = Arc::clone(&engine);
-                    tokio::spawn(async move {
-                        let _ = server::handle_connection(stream, engine).await;
-                    });
-                }
-            }
-        }
+        let _ = server::serve_with_shutdown(listener, engine, metrics, async {
+            let _ = shutdown_rx.await;
+        })
+        .await;
 
         if let Some(handle) = expirer.take() {
             handle.stop();

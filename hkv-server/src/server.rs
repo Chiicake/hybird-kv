@@ -3,17 +3,56 @@
 //! Accept RESP2 connections, parse commands, and dispatch them to the
 //! storage engine with minimal overhead.
 
+use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::BytesMut;
+use socket2::{SockRef, TcpKeepalive};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tokio::task::JoinSet;
 
 use hkv_engine::{KVEngine, MemoryEngine, TtlStatus};
 
 use crate::metrics::Metrics;
 use crate::protocol::{RespError, RespParser};
+
+const DEFAULT_SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+const DEFAULT_KEEPALIVE_TIME: Duration = Duration::from_secs(30);
+const DEFAULT_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(10);
+const DEFAULT_KEEPALIVE_RETRIES: u32 = 3;
+
+#[derive(Clone, Copy)]
+struct ServerConfig {
+    shutdown_drain_timeout: Duration,
+    keepalive_time: Duration,
+    keepalive_interval: Duration,
+    keepalive_retries: u32,
+}
+
+const DEFAULT_SERVER_CONFIG: ServerConfig = ServerConfig {
+    shutdown_drain_timeout: DEFAULT_SHUTDOWN_DRAIN_TIMEOUT,
+    keepalive_time: DEFAULT_KEEPALIVE_TIME,
+    keepalive_interval: DEFAULT_KEEPALIVE_INTERVAL,
+    keepalive_retries: DEFAULT_KEEPALIVE_RETRIES,
+};
+
+/// Serves accepted TCP connections until shutdown is triggered.
+///
+/// The shutdown signal stops new accepts immediately, then drains active
+/// connections for a bounded grace period before aborting remaining tasks.
+pub async fn serve_with_shutdown<F>(
+    listener: tokio::net::TcpListener,
+    engine: Arc<MemoryEngine>,
+    metrics: Arc<Metrics>,
+    shutdown: F,
+) -> std::io::Result<()>
+where
+    F: Future<Output = ()>,
+{
+    serve_with_shutdown_config(listener, engine, metrics, shutdown, DEFAULT_SERVER_CONFIG).await
+}
 
 /// Handles a single TCP client connection.
 pub async fn handle_connection(
@@ -21,6 +60,59 @@ pub async fn handle_connection(
     engine: Arc<MemoryEngine>,
 ) -> std::io::Result<()> {
     handle_connection_with_metrics(stream, engine, Arc::new(Metrics::new())).await
+}
+
+async fn serve_with_shutdown_config<F>(
+    listener: tokio::net::TcpListener,
+    engine: Arc<MemoryEngine>,
+    metrics: Arc<Metrics>,
+    shutdown: F,
+    config: ServerConfig,
+) -> std::io::Result<()>
+where
+    F: Future<Output = ()>,
+{
+    let listener = listener;
+    let mut connections = JoinSet::new();
+    tokio::pin!(shutdown);
+
+    loop {
+        tokio::select! {
+            _ = &mut shutdown => break,
+            Some(join_result) = connections.join_next(), if !connections.is_empty() => {
+                reap_connection_task(join_result);
+            }
+            accept = listener.accept() => {
+                let (stream, _) = accept?;
+                configure_accepted_stream(&stream, config)?;
+                let engine = Arc::clone(&engine);
+                let metrics = Arc::clone(&metrics);
+                connections.spawn(async move {
+                    handle_connection_with_metrics(stream, engine, metrics).await
+                });
+            }
+        }
+    }
+
+    drop(listener);
+
+    let drain = async {
+        while let Some(join_result) = connections.join_next().await {
+            reap_connection_task(join_result);
+        }
+    };
+
+    if tokio::time::timeout(config.shutdown_drain_timeout, drain)
+        .await
+        .is_err()
+    {
+        connections.abort_all();
+        while let Some(join_result) = connections.join_next().await {
+            reap_connection_task(join_result);
+        }
+    }
+
+    Ok(())
 }
 
 /// Handles a single TCP client connection with shared server metrics.
@@ -283,6 +375,21 @@ fn is_error_response(response: &[u8]) -> bool {
     response.first() == Some(&b'-')
 }
 
+fn configure_accepted_stream(stream: &TcpStream, config: ServerConfig) -> std::io::Result<()> {
+    stream.set_nodelay(true)?;
+
+    let socket = SockRef::from(stream);
+    socket.set_keepalive(true)?;
+
+    #[cfg(not(any(target_os = "openbsd", target_os = "haiku")))]
+    {
+        let keepalive = build_tcp_keepalive(config);
+        socket.set_tcp_keepalive(&keepalive)?;
+    }
+
+    Ok(())
+}
+
 fn finish_tracked_request(
     metrics: &Metrics,
     started_at: Instant,
@@ -294,6 +401,100 @@ fn finish_tracked_request(
     }
     metrics.record_request_end(started_at.elapsed());
     write_result
+}
+
+fn reap_connection_task(join_result: Result<std::io::Result<()>, tokio::task::JoinError>) {
+    if let Err(join_error) = join_result {
+        if join_error.is_panic() {
+            std::panic::resume_unwind(join_error.into_panic());
+        }
+    }
+}
+
+fn build_tcp_keepalive(config: ServerConfig) -> TcpKeepalive {
+    let keepalive = TcpKeepalive::new().with_time(config.keepalive_time);
+    let keepalive = with_keepalive_interval(keepalive, config.keepalive_interval);
+    with_keepalive_retries(keepalive, config.keepalive_retries)
+}
+
+#[cfg(any(
+    target_os = "android",
+    target_os = "dragonfly",
+    target_os = "freebsd",
+    target_os = "fuchsia",
+    target_os = "illumos",
+    target_os = "ios",
+    target_os = "visionos",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "netbsd",
+    target_os = "tvos",
+    target_os = "watchos",
+    target_os = "windows",
+    target_os = "cygwin",
+))]
+fn with_keepalive_interval(keepalive: TcpKeepalive, interval: Duration) -> TcpKeepalive {
+    keepalive.with_interval(interval)
+}
+
+#[cfg(not(any(
+    target_os = "android",
+    target_os = "dragonfly",
+    target_os = "freebsd",
+    target_os = "fuchsia",
+    target_os = "illumos",
+    target_os = "ios",
+    target_os = "visionos",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "netbsd",
+    target_os = "tvos",
+    target_os = "watchos",
+    target_os = "windows",
+    target_os = "cygwin",
+)))]
+fn with_keepalive_interval(keepalive: TcpKeepalive, _: Duration) -> TcpKeepalive {
+    keepalive
+}
+
+#[cfg(any(
+    target_os = "android",
+    target_os = "dragonfly",
+    target_os = "freebsd",
+    target_os = "fuchsia",
+    target_os = "illumos",
+    target_os = "ios",
+    target_os = "visionos",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "netbsd",
+    target_os = "tvos",
+    target_os = "watchos",
+    target_os = "cygwin",
+    target_os = "windows",
+))]
+fn with_keepalive_retries(keepalive: TcpKeepalive, retries: u32) -> TcpKeepalive {
+    keepalive.with_retries(retries)
+}
+
+#[cfg(not(any(
+    target_os = "android",
+    target_os = "dragonfly",
+    target_os = "freebsd",
+    target_os = "fuchsia",
+    target_os = "illumos",
+    target_os = "ios",
+    target_os = "visionos",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "netbsd",
+    target_os = "tvos",
+    target_os = "watchos",
+    target_os = "cygwin",
+    target_os = "windows",
+)))]
+fn with_keepalive_retries(keepalive: TcpKeepalive, _: u32) -> TcpKeepalive {
+    keepalive
 }
 
 fn eq_ignore_ascii_case(a: &[u8], b: &[u8]) -> bool {
@@ -320,6 +521,114 @@ fn parse_u64(arg: &[u8]) -> Result<u64, Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::TcpStream as StdTcpStream;
+    use std::time::Duration;
+
+    use socket2::SockRef;
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio::sync::oneshot;
+    use tokio::time::timeout;
+
+    fn test_server_config(shutdown_drain_timeout: Duration) -> ServerConfig {
+        ServerConfig {
+            shutdown_drain_timeout,
+            ..DEFAULT_SERVER_CONFIG
+        }
+    }
+
+    async fn spawn_server_for_test(
+        shutdown_drain_timeout: Duration,
+    ) -> (
+        std::net::SocketAddr,
+        oneshot::Sender<()>,
+        tokio::task::JoinHandle<std::io::Result<()>>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let engine = Arc::new(MemoryEngine::new());
+        let metrics = Arc::new(Metrics::new());
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+        let handle = tokio::spawn(async move {
+            serve_with_shutdown_config(
+                listener,
+                engine,
+                metrics,
+                async {
+                    let _ = shutdown_rx.await;
+                },
+                test_server_config(shutdown_drain_timeout),
+            )
+            .await
+        });
+
+        (addr, shutdown_tx, handle)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn configure_accepted_stream_enables_nodelay_and_keepalive() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let connect = tokio::spawn(async move { TcpStream::connect(addr).await.unwrap() });
+
+        let (server_stream, _) = listener.accept().await.unwrap();
+        let _client_stream = connect.await.unwrap();
+
+        configure_accepted_stream(&server_stream, DEFAULT_SERVER_CONFIG).unwrap();
+
+        assert!(server_stream.nodelay().unwrap());
+        assert!(SockRef::from(&server_stream).keepalive().unwrap());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn serve_with_shutdown_waits_for_active_connections_to_close() {
+        let (addr, shutdown, mut server_task) =
+            spawn_server_for_test(Duration::from_millis(200)).await;
+        let client = StdTcpStream::connect(addr).unwrap();
+
+        shutdown.send(()).unwrap();
+
+        assert!(
+            timeout(Duration::from_millis(50), &mut server_task)
+                .await
+                .is_err()
+        );
+
+        drop(client);
+
+        let result = timeout(Duration::from_secs(1), &mut server_task)
+            .await
+            .unwrap();
+        assert!(result.unwrap().is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn serve_with_shutdown_aborts_stuck_connections_after_timeout() {
+        let (addr, shutdown, mut server_task) =
+            spawn_server_for_test(Duration::from_millis(50)).await;
+        let _client = StdTcpStream::connect(addr).unwrap();
+
+        shutdown.send(()).unwrap();
+
+        let result = timeout(Duration::from_secs(1), &mut server_task)
+            .await
+            .unwrap();
+        assert!(result.unwrap().is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn serve_with_shutdown_closes_listener_after_shutdown() {
+        let (addr, shutdown, mut server_task) =
+            spawn_server_for_test(Duration::from_millis(50)).await;
+
+        shutdown.send(()).unwrap();
+        let result = timeout(Duration::from_secs(1), &mut server_task)
+            .await
+            .unwrap();
+        assert!(result.unwrap().is_ok());
+
+        assert!(StdTcpStream::connect(addr).is_err());
+    }
 
     #[test]
     fn finish_tracked_request_releases_inflight_on_write_error() {

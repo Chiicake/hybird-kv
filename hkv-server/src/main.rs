@@ -26,14 +26,29 @@ async fn main() -> std::io::Result<()> {
 
     let engine = Arc::new(MemoryEngine::new());
     let metrics = Arc::new(Metrics::new());
-    let _expirer = engine.start_expirer(Duration::from_secs(1));
+    let expirer = engine.start_expirer(Duration::from_secs(1));
 
-    loop {
-        let (stream, _) = listener.accept().await?;
-        let engine = Arc::clone(&engine);
-        let metrics = Arc::clone(&metrics);
-        tokio::spawn(async move {
-            let _ = server::handle_connection_with_metrics(stream, engine, metrics).await;
-        });
-    }
+    let result = server::serve_with_shutdown(listener, engine, metrics, shutdown_signal()?).await;
+    expirer.stop();
+    result
+}
+
+#[cfg(unix)]
+fn shutdown_signal() -> std::io::Result<impl std::future::Future<Output = ()>> {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let mut terminate = signal(SignalKind::terminate())?;
+    Ok(async move {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = terminate.recv() => {}
+        }
+    })
+}
+
+#[cfg(not(unix))]
+fn shutdown_signal() -> std::io::Result<impl std::future::Future<Output = ()>> {
+    Ok(async {
+        let _ = tokio::signal::ctrl_c().await;
+    })
 }

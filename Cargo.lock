@@ -109,6 +109,7 @@ dependencies = [
  "hkv-client",
  "hkv-common",
  "hkv-engine",
+ "socket2",
  "tokio",
 ]
 

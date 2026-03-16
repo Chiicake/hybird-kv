@@ -7,6 +7,7 @@ edition = "2024"
 hkv-engine = { path = "../hkv-engine" }
 hkv-common = { path = "../hkv-common" }
 bytes = "1"
+socket2 = { version = "0.6", features = ["all"] }
 tokio = { version = "1", features = ["full"] }
 
 [dev-dependencies]
