@@ -45,20 +45,16 @@ pub async fn handle_connection_with_metrics(
                     metrics.record_request_start();
                     let started_at = Instant::now();
                     let response = dispatch_command(&args, engine.as_ref(), metrics.as_ref());
-                    if is_error_response(&response) {
-                        metrics.record_error();
-                    }
-                    stream.write_all(&response).await?;
-                    metrics.record_request_end(started_at.elapsed());
+                    let write_result = stream.write_all(&response).await;
+                    finish_tracked_request(metrics.as_ref(), started_at, &response, write_result)?;
                 }
                 Ok(None) => break,
                 Err(RespError::Protocol) => {
                     metrics.record_request_start();
-                    metrics.record_error();
                     let started_at = Instant::now();
                     let response = resp_error("protocol error");
-                    stream.write_all(&response).await?;
-                    metrics.record_request_end(started_at.elapsed());
+                    let write_result = stream.write_all(&response).await;
+                    finish_tracked_request(metrics.as_ref(), started_at, &response, write_result)?;
                     return Ok(());
                 }
             }
@@ -287,6 +283,19 @@ fn is_error_response(response: &[u8]) -> bool {
     response.first() == Some(&b'-')
 }
 
+fn finish_tracked_request(
+    metrics: &Metrics,
+    started_at: Instant,
+    response: &[u8],
+    write_result: std::io::Result<()>,
+) -> std::io::Result<()> {
+    if is_error_response(response) {
+        metrics.record_error();
+    }
+    metrics.record_request_end(started_at.elapsed());
+    write_result
+}
+
 fn eq_ignore_ascii_case(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len()
         && a.iter()
@@ -306,4 +315,55 @@ fn parse_u64(arg: &[u8]) -> Result<u64, Vec<u8>> {
         value = value.saturating_mul(10).saturating_add((b - b'0') as u64);
     }
     Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finish_tracked_request_releases_inflight_on_write_error() {
+        let metrics = Metrics::new();
+        metrics.record_request_start();
+
+        let result = finish_tracked_request(
+            &metrics,
+            Instant::now(),
+            b"+OK\r\n",
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "write failed",
+            )),
+        );
+
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::BrokenPipe);
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.requests_total, 1);
+        assert_eq!(snapshot.errors_total, 0);
+        assert_eq!(snapshot.inflight, 0);
+        assert_eq!(snapshot.latency.samples, 1);
+    }
+
+    #[test]
+    fn finish_tracked_request_counts_error_responses_even_on_write_failure() {
+        let metrics = Metrics::new();
+        metrics.record_request_start();
+
+        let result = finish_tracked_request(
+            &metrics,
+            Instant::now(),
+            b"-ERR protocol error\r\n",
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "write failed",
+            )),
+        );
+
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::BrokenPipe);
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.requests_total, 1);
+        assert_eq!(snapshot.errors_total, 1);
+        assert_eq!(snapshot.inflight, 0);
+        assert_eq!(snapshot.latency.samples, 1);
+    }
 }
