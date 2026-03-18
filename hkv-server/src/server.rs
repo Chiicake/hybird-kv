@@ -521,6 +521,7 @@ fn parse_u64(arg: &[u8]) -> Result<u64, Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
     use std::net::TcpStream as StdTcpStream;
     use std::time::Duration;
 
@@ -584,7 +585,15 @@ mod tests {
     async fn serve_with_shutdown_waits_for_active_connections_to_close() {
         let (addr, shutdown, mut server_task) =
             spawn_server_for_test(Duration::from_millis(200)).await;
-        let client = StdTcpStream::connect(addr).unwrap();
+        let mut client = StdTcpStream::connect(addr).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        client.write_all(b"*1\r\n$4\r\nPING\r\n").unwrap();
+
+        let mut pong = [0u8; 7];
+        client.read_exact(&mut pong).unwrap();
+        assert_eq!(&pong, b"+PONG\r\n");
 
         shutdown.send(()).unwrap();
 
