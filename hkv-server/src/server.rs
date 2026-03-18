@@ -13,7 +13,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::task::JoinSet;
 
-use hkv_engine::{KVEngine, MemoryEngine, TtlStatus};
+use hkv_engine::{KVEngine, TtlStatus};
 
 use crate::metrics::Metrics;
 use crate::protocol::{RespError, RespParser};
@@ -42,34 +42,36 @@ const DEFAULT_SERVER_CONFIG: ServerConfig = ServerConfig {
 ///
 /// The shutdown signal stops new accepts immediately, then drains active
 /// connections for a bounded grace period before aborting remaining tasks.
-pub async fn serve_with_shutdown<F>(
+pub async fn serve_with_shutdown<E, F>(
     listener: tokio::net::TcpListener,
-    engine: Arc<MemoryEngine>,
+    engine: Arc<E>,
     metrics: Arc<Metrics>,
     shutdown: F,
 ) -> std::io::Result<()>
 where
+    E: KVEngine + 'static,
     F: Future<Output = ()>,
 {
     serve_with_shutdown_config(listener, engine, metrics, shutdown, DEFAULT_SERVER_CONFIG).await
 }
 
 /// Handles a single TCP client connection.
-pub async fn handle_connection(
-    stream: TcpStream,
-    engine: Arc<MemoryEngine>,
-) -> std::io::Result<()> {
+pub async fn handle_connection<E>(stream: TcpStream, engine: Arc<E>) -> std::io::Result<()>
+where
+    E: KVEngine,
+{
     handle_connection_with_metrics(stream, engine, Arc::new(Metrics::new())).await
 }
 
-async fn serve_with_shutdown_config<F>(
+async fn serve_with_shutdown_config<E, F>(
     listener: tokio::net::TcpListener,
-    engine: Arc<MemoryEngine>,
+    engine: Arc<E>,
     metrics: Arc<Metrics>,
     shutdown: F,
     config: ServerConfig,
 ) -> std::io::Result<()>
 where
+    E: KVEngine + 'static,
     F: Future<Output = ()>,
 {
     let listener = listener;
@@ -116,11 +118,14 @@ where
 }
 
 /// Handles a single TCP client connection with shared server metrics.
-pub async fn handle_connection_with_metrics(
+pub async fn handle_connection_with_metrics<E>(
     stream: TcpStream,
-    engine: Arc<MemoryEngine>,
+    engine: Arc<E>,
     metrics: Arc<Metrics>,
-) -> std::io::Result<()> {
+) -> std::io::Result<()>
+where
+    E: KVEngine,
+{
     let mut stream = stream;
     let mut buffer = BytesMut::with_capacity(8 * 1024);
     let mut parser = RespParser::new();
@@ -156,7 +161,7 @@ pub async fn handle_connection_with_metrics(
     Ok(())
 }
 
-fn dispatch_command(args: &[Vec<u8>], engine: &MemoryEngine, metrics: &Metrics) -> Vec<u8> {
+fn dispatch_command(args: &[Vec<u8>], engine: &impl KVEngine, metrics: &Metrics) -> Vec<u8> {
     if args.is_empty() {
         return resp_error("empty command");
     }
@@ -195,7 +200,7 @@ fn handle_ping(args: &[Vec<u8>]) -> Vec<u8> {
     }
 }
 
-fn handle_get(args: &[Vec<u8>], engine: &MemoryEngine) -> Vec<u8> {
+fn handle_get(args: &[Vec<u8>], engine: &impl KVEngine) -> Vec<u8> {
     if args.len() != 2 {
         return resp_error("wrong number of arguments for GET");
     }
@@ -206,7 +211,7 @@ fn handle_get(args: &[Vec<u8>], engine: &MemoryEngine) -> Vec<u8> {
     }
 }
 
-fn handle_set(args: &[Vec<u8>], engine: &MemoryEngine) -> Vec<u8> {
+fn handle_set(args: &[Vec<u8>], engine: &impl KVEngine) -> Vec<u8> {
     if args.len() < 3 {
         return resp_error("wrong number of arguments for SET");
     }
@@ -227,12 +232,8 @@ fn handle_set(args: &[Vec<u8>], engine: &MemoryEngine) -> Vec<u8> {
             Err(resp) => return resp,
         };
 
-        if engine.set(key, value).is_err() {
-            return resp_error("engine error");
-        }
-
         if engine
-            .expire(&args[1], Duration::from_secs(seconds))
+            .set_with_ttl(key, value, Duration::from_secs(seconds))
             .is_err()
         {
             return resp_error("engine error");
@@ -244,7 +245,7 @@ fn handle_set(args: &[Vec<u8>], engine: &MemoryEngine) -> Vec<u8> {
     resp_error("unsupported SET options")
 }
 
-fn handle_del(args: &[Vec<u8>], engine: &MemoryEngine) -> Vec<u8> {
+fn handle_del(args: &[Vec<u8>], engine: &impl KVEngine) -> Vec<u8> {
     if args.len() < 2 {
         return resp_error("wrong number of arguments for DEL");
     }
@@ -261,7 +262,7 @@ fn handle_del(args: &[Vec<u8>], engine: &MemoryEngine) -> Vec<u8> {
     resp_integer(removed)
 }
 
-fn handle_expire(args: &[Vec<u8>], engine: &MemoryEngine) -> Vec<u8> {
+fn handle_expire(args: &[Vec<u8>], engine: &impl KVEngine) -> Vec<u8> {
     if args.len() != 3 {
         return resp_error("wrong number of arguments for EXPIRE");
     }
@@ -278,7 +279,7 @@ fn handle_expire(args: &[Vec<u8>], engine: &MemoryEngine) -> Vec<u8> {
     }
 }
 
-fn handle_ttl(args: &[Vec<u8>], engine: &MemoryEngine) -> Vec<u8> {
+fn handle_ttl(args: &[Vec<u8>], engine: &impl KVEngine) -> Vec<u8> {
     if args.len() != 2 {
         return resp_error("wrong number of arguments for TTL");
     }
@@ -523,12 +524,74 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::net::TcpStream as StdTcpStream;
+    use std::sync::Mutex;
     use std::time::Duration;
 
+    use hkv_common::HkvResult;
+    use hkv_engine::MemoryEngine;
     use socket2::SockRef;
     use tokio::net::{TcpListener, TcpStream};
     use tokio::sync::oneshot;
     use tokio::time::timeout;
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum FakeOp {
+        Set(Vec<u8>, Vec<u8>),
+        SetWithTtl(Vec<u8>, Vec<u8>, Duration),
+        Delete(Vec<u8>),
+        Expire(Vec<u8>, Duration),
+        Ttl(Vec<u8>),
+        Get(Vec<u8>),
+    }
+
+    #[derive(Default)]
+    struct FakeEngine {
+        ops: Mutex<Vec<FakeOp>>,
+    }
+
+    impl FakeEngine {
+        fn recorded_ops(&self) -> Vec<FakeOp> {
+            self.ops.lock().unwrap().clone()
+        }
+    }
+
+    impl KVEngine for FakeEngine {
+        fn get(&self, key: &[u8]) -> HkvResult<Option<Arc<[u8]>>> {
+            self.ops.lock().unwrap().push(FakeOp::Get(key.to_vec()));
+            Ok(None)
+        }
+
+        fn set(&self, key: Vec<u8>, value: Vec<u8>) -> HkvResult<()> {
+            self.ops.lock().unwrap().push(FakeOp::Set(key, value));
+            Ok(())
+        }
+
+        fn set_with_ttl(&self, key: Vec<u8>, value: Vec<u8>, ttl: Duration) -> HkvResult<()> {
+            self.ops
+                .lock()
+                .unwrap()
+                .push(FakeOp::SetWithTtl(key, value, ttl));
+            Ok(())
+        }
+
+        fn delete(&self, key: &[u8]) -> HkvResult<bool> {
+            self.ops.lock().unwrap().push(FakeOp::Delete(key.to_vec()));
+            Ok(false)
+        }
+
+        fn expire(&self, key: &[u8], ttl: Duration) -> HkvResult<()> {
+            self.ops
+                .lock()
+                .unwrap()
+                .push(FakeOp::Expire(key.to_vec(), ttl));
+            Ok(())
+        }
+
+        fn ttl(&self, key: &[u8]) -> HkvResult<TtlStatus> {
+            self.ops.lock().unwrap().push(FakeOp::Ttl(key.to_vec()));
+            Ok(TtlStatus::NoExpiry)
+        }
+    }
 
     fn test_server_config(shutdown_drain_timeout: Duration) -> ServerConfig {
         ServerConfig {
@@ -683,5 +746,51 @@ mod tests {
         assert_eq!(snapshot.errors_total, 1);
         assert_eq!(snapshot.inflight, 0);
         assert_eq!(snapshot.latency.samples, 1);
+    }
+
+    #[test]
+    fn set_ex_dispatches_only_set_with_ttl() {
+        let engine = FakeEngine::default();
+        let metrics = Metrics::new();
+
+        let response = dispatch_command(
+            &[
+                b"SET".to_vec(),
+                b"key".to_vec(),
+                b"value".to_vec(),
+                b"EX".to_vec(),
+                b"10".to_vec(),
+            ],
+            &engine,
+            &metrics,
+        );
+
+        assert_eq!(response, b"+OK\r\n");
+        assert_eq!(
+            engine.recorded_ops(),
+            vec![FakeOp::SetWithTtl(
+                b"key".to_vec(),
+                b"value".to_vec(),
+                Duration::from_secs(10)
+            )]
+        );
+    }
+
+    #[test]
+    fn plain_set_still_dispatches_set() {
+        let engine = FakeEngine::default();
+        let metrics = Metrics::new();
+
+        let response = dispatch_command(
+            &[b"SET".to_vec(), b"key".to_vec(), b"value".to_vec()],
+            &engine,
+            &metrics,
+        );
+
+        assert_eq!(response, b"+OK\r\n");
+        assert_eq!(
+            engine.recorded_ops(),
+            vec![FakeOp::Set(b"key".to_vec(), b"value".to_vec())]
+        );
     }
 }

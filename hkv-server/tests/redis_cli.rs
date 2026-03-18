@@ -89,6 +89,13 @@ async fn redis_cli_basic_commands() {
     let ttl = run_redis_cli(port, &["TTL", "key"]).unwrap();
     assert_eq!(ttl, "-1");
 
+    let set_with_ttl = run_redis_cli(port, &["SET", "ttl-key", "value", "EX", "1"]).unwrap();
+    assert_eq!(set_with_ttl, "OK");
+
+    let ttl = run_redis_cli(port, &["TTL", "ttl-key"]).unwrap();
+    let ttl: i64 = ttl.parse().unwrap();
+    assert!(ttl >= 0);
+
     let expire = run_redis_cli(port, &["EXPIRE", "key", "1"]).unwrap();
     assert_eq!(expire, "1");
 
@@ -98,6 +105,9 @@ async fn redis_cli_basic_commands() {
 
     let ttl = run_redis_cli(port, &["TTL", "key"]).unwrap();
     assert_eq!(ttl, "-2");
+
+    let ttl_key_value = run_redis_cli(port, &["GET", "ttl-key"]).unwrap();
+    assert_eq!(ttl_key_value, "(nil)");
 
     let removed = run_redis_cli(port, &["DEL", "key"]).unwrap();
     assert_eq!(removed, "0");

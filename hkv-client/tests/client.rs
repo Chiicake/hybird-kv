@@ -155,6 +155,23 @@ fn client_set_get_roundtrip() {
 }
 
 #[test]
+fn client_set_with_ttl_uses_single_set_ex_command() {
+    let addr = spawn_server(1, |_, args, stream| {
+        assert_eq!(args[0], b"SET");
+        assert_eq!(args[1], b"key");
+        assert_eq!(args[2], b"value");
+        assert_eq!(args[3], b"EX");
+        assert_eq!(args[4], b"5");
+        write_simple(stream, "OK");
+    });
+
+    let client = client_with_addr(addr);
+    client
+        .set_with_ttl(b"key", b"value", Duration::from_secs(5))
+        .expect("set_with_ttl");
+}
+
+#[test]
 fn client_ttl_and_delete() {
     let addr = spawn_server(2, |idx, args, stream| {
         if idx == 0 {

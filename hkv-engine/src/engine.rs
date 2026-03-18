@@ -38,6 +38,12 @@ pub trait KVEngine: Send + Sync {
     /// Takes ownership to avoid extra copies on the hot path.
     fn set(&self, key: Vec<u8>, value: Vec<u8>) -> HkvResult<()>;
 
+    /// Inserts or replaces a key and attaches an expiration atomically.
+    ///
+    /// Implementations must not expose a state where the value is visible
+    /// before the TTL is attached.
+    fn set_with_ttl(&self, key: Vec<u8>, value: Vec<u8>, ttl: Duration) -> HkvResult<()>;
+
     /// Removes a key. Returns true if the key existed and was removed.
     fn delete(&self, key: &[u8]) -> HkvResult<bool>;
 

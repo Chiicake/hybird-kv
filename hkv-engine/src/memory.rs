@@ -460,6 +460,74 @@ impl MemoryEngine {
         self.next_ttl_token.fetch_add(1, Ordering::Relaxed)
     }
 
+    /// Inserts or replaces a key and optionally attaches a TTL in one write.
+    ///
+    /// When `ttl` is `Some`, the value and expiration become visible together
+    /// under the same shard lock to avoid a half-written state.
+    fn write_value(&self, key: Vec<u8>, value: Vec<u8>, ttl: Option<Duration>) {
+        let shard = self.shard_for(&key);
+        let now = Instant::now();
+        let mut inner = shard.inner.write();
+        let key_arc: Arc<[u8]> = Arc::from(key);
+        let value_arc: Arc<[u8]> = Arc::from(value);
+        let new_size = Self::entry_size(key_arc.len(), value_arc.len());
+        let expires_at = ttl.map(|ttl| now + ttl);
+
+        if let Some(&idx) = inner.map.get(key_arc.as_ref()) {
+            let remove = inner.nodes[idx].as_ref().map(|node| node.is_expired(now));
+            if remove.unwrap_or(false) {
+                if let Some(size) = inner.remove_idx(idx) {
+                    self.used_bytes.fetch_sub(size, Ordering::Relaxed);
+                }
+            }
+        }
+
+        let mut scheduled_expiration = None;
+
+        if let Some(&idx) = inner.map.get(key_arc.as_ref()) {
+            let token = self.next_ttl_token();
+            if let Some(node) = inner.nodes[idx].as_mut() {
+                let old_size = node.size;
+                node.value = value_arc;
+                node.size = new_size;
+                node.expires_at = expires_at;
+                node.ttl_token = token;
+                inner.touch(idx);
+
+                if new_size > old_size {
+                    self.used_bytes
+                        .fetch_add(new_size - old_size, Ordering::Relaxed);
+                } else if old_size > new_size {
+                    self.used_bytes
+                        .fetch_sub(old_size - new_size, Ordering::Relaxed);
+                }
+            }
+
+            if let Some(expires_at) = expires_at {
+                scheduled_expiration = Some((idx, expires_at, token));
+            }
+        } else {
+            let idx = inner.insert_new(Arc::clone(&key_arc), value_arc, new_size);
+            self.used_bytes.fetch_add(new_size, Ordering::Relaxed);
+
+            if let Some(expires_at) = expires_at {
+                let token = self.next_ttl_token();
+                if let Some(node) = inner.nodes[idx].as_mut() {
+                    node.expires_at = Some(expires_at);
+                    node.ttl_token = token;
+                }
+                scheduled_expiration = Some((idx, expires_at, token));
+            }
+        }
+
+        if let Some((idx, expires_at, token)) = scheduled_expiration {
+            inner.schedule_expiration(idx, expires_at, token);
+        }
+
+        drop(inner);
+        self.evict_if_needed();
+    }
+
     /// Calculates entry size for eviction accounting.
     ///
     /// This ignores allocator overhead to keep the computation zero-cost.
@@ -546,47 +614,13 @@ impl KVEngine for MemoryEngine {
     ///
     /// This resets TTL to `None` and triggers eviction when over budget.
     fn set(&self, key: Vec<u8>, value: Vec<u8>) -> HkvResult<()> {
-        let shard = self.shard_for(&key);
-        let mut inner = shard.inner.write();
-        let key_arc: Arc<[u8]> = Arc::from(key);
-        let value_arc: Arc<[u8]> = Arc::from(value);
-        let new_size = Self::entry_size(key_arc.len(), value_arc.len());
+        self.write_value(key, value, None);
+        Ok(())
+    }
 
-        if let Some(&idx) = inner.map.get(key_arc.as_ref()) {
-            let remove = inner.nodes[idx]
-                .as_ref()
-                .map(|node| node.is_expired(Instant::now()));
-            if remove.unwrap_or(false) {
-                if let Some(size) = inner.remove_idx(idx) {
-                    self.used_bytes.fetch_sub(size, Ordering::Relaxed);
-                }
-            }
-        }
-
-        if let Some(&idx) = inner.map.get(key_arc.as_ref()) {
-            if let Some(node) = inner.nodes[idx].as_mut() {
-                let old_size = node.size;
-                node.value = value_arc;
-                node.size = new_size;
-                node.expires_at = None;
-                node.ttl_token = self.next_ttl_token();
-                inner.touch(idx);
-
-                if new_size > old_size {
-                    self.used_bytes
-                        .fetch_add(new_size - old_size, Ordering::Relaxed);
-                } else if old_size > new_size {
-                    self.used_bytes
-                        .fetch_sub(old_size - new_size, Ordering::Relaxed);
-                }
-            }
-        } else {
-            inner.insert_new(Arc::clone(&key_arc), value_arc, new_size);
-            self.used_bytes.fetch_add(new_size, Ordering::Relaxed);
-        }
-
-        drop(inner);
-        self.evict_if_needed();
+    /// Inserts or replaces a key and attaches an expiration atomically.
+    fn set_with_ttl(&self, key: Vec<u8>, value: Vec<u8>, ttl: Duration) -> HkvResult<()> {
+        self.write_value(key, value, Some(ttl));
         Ok(())
     }
 
@@ -749,6 +783,44 @@ mod tests {
 
         let inner = engine.shards[0].inner.read();
         assert_eq!(inner.ttl_heap.len(), 1);
+    }
+
+    #[test]
+    fn set_with_ttl_stores_value_and_expiration_in_one_write_path() {
+        let engine = MemoryEngine::with_shard_count(1);
+        engine
+            .set_with_ttl(
+                b"alpha".to_vec(),
+                b"value".to_vec(),
+                Duration::from_millis(20),
+            )
+            .unwrap();
+
+        assert_eq!(&*engine.get(b"alpha").unwrap().unwrap(), b"value");
+        assert!(matches!(
+            engine.ttl(b"alpha").unwrap(),
+            TtlStatus::ExpiresIn(_)
+        ));
+    }
+
+    #[test]
+    fn set_with_ttl_refreshes_deadline_without_stale_heap_deleting_value() {
+        let engine = MemoryEngine::with_shard_count(1);
+        engine
+            .set_with_ttl(b"alpha".to_vec(), b"old".to_vec(), Duration::from_millis(1))
+            .unwrap();
+        engine
+            .set_with_ttl(b"alpha".to_vec(), b"new".to_vec(), Duration::from_secs(1))
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+
+        let removed = engine.purge_expired(Instant::now());
+        assert_eq!(removed, 0);
+        assert_eq!(&*engine.get(b"alpha").unwrap().unwrap(), b"new");
+        assert!(matches!(
+            engine.ttl(b"alpha").unwrap(),
+            TtlStatus::ExpiresIn(_)
+        ));
     }
 
     #[test]
