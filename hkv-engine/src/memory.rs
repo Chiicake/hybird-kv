@@ -37,10 +37,12 @@
 //!                           └── Node { key, value, expires_at, size, prev, next }
 //! ```
 
+use std::cmp::{Ordering as CmpOrdering, Reverse};
+use std::collections::BinaryHeap;
 use std::hash::{BuildHasher, Hasher};
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -68,6 +70,8 @@ struct Node {
     value: Arc<[u8]>,
     // Absolute expiration timestamp.
     expires_at: Option<Instant>,
+    // Monotonic token used to invalidate stale heap entries lazily.
+    ttl_token: u64,
     // Byte size for eviction accounting (key + value).
     size: usize,
     // Intrusive LRU pointers (index-based to keep nodes packed).
@@ -84,6 +88,32 @@ impl Node {
             Some(deadline) => now >= deadline,
             None => false,
         }
+    }
+}
+
+/// Heap entry for active expiration scheduling.
+///
+/// The heap is per-shard and uses lazy invalidation: updates and deletes push
+/// or leave behind stale entries, and the sweeper discards them when popped.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ExpirationEntry {
+    expires_at: Instant,
+    idx: usize,
+    token: u64,
+}
+
+impl Ord for ExpirationEntry {
+    fn cmp(&self, other: &Self) -> CmpOrdering {
+        self.expires_at
+            .cmp(&other.expires_at)
+            .then_with(|| self.idx.cmp(&other.idx))
+            .then_with(|| self.token.cmp(&other.token))
+    }
+}
+
+impl PartialOrd for ExpirationEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<CmpOrdering> {
+        Some(self.cmp(other))
     }
 }
 
@@ -107,6 +137,8 @@ struct ShardInner {
     nodes: Vec<Option<Node>>,
     /// Free-list for recycling node slots.
     free: Vec<usize>,
+    /// Min-heap of TTL deadlines for active expiration.
+    ttl_heap: BinaryHeap<Reverse<ExpirationEntry>>,
     /// LRU head (oldest) and tail (most recent).
     head: Option<usize>,
     tail: Option<usize>,
@@ -122,6 +154,7 @@ impl ShardInner {
             map: HashMap::with_hasher(hash_state),
             nodes: Vec::new(),
             free: Vec::new(),
+            ttl_heap: BinaryHeap::new(),
             head: None,
             tail: None,
         }
@@ -203,6 +236,7 @@ impl ShardInner {
             key: Arc::clone(&key),
             value,
             expires_at: None,
+            ttl_token: 0,
             size,
             prev: None,
             next: None,
@@ -210,6 +244,38 @@ impl ShardInner {
         self.lru_push_back(idx);
         self.map.insert(key, idx);
         idx
+    }
+
+    /// Adds or refreshes a node in the TTL heap.
+    fn schedule_expiration(&mut self, idx: usize, expires_at: Instant, token: u64) {
+        self.ttl_heap.push(Reverse(ExpirationEntry {
+            expires_at,
+            idx,
+            token,
+        }));
+    }
+
+    /// Pops stale heap heads until a live expired entry is found or the next
+    /// deadline is still in the future.
+    fn pop_due_expiration(&mut self, now: Instant) -> Option<ExpirationEntry> {
+        loop {
+            let Reverse(entry) = *self.ttl_heap.peek()?;
+            if entry.expires_at > now {
+                return None;
+            }
+
+            self.ttl_heap.pop();
+
+            let Some(node) = self.nodes.get(entry.idx).and_then(Option::as_ref) else {
+                continue;
+            };
+
+            if node.ttl_token != entry.token || node.expires_at != Some(entry.expires_at) {
+                continue;
+            }
+
+            return Some(entry);
+        }
     }
 
     /// Removes a node by index and returns its byte size.
@@ -264,6 +330,8 @@ pub struct MemoryEngine {
     used_bytes: AtomicUsize,
     /// Round-robin cursor for eviction across shards.
     eviction_cursor: AtomicUsize,
+    /// Monotonic TTL token source to invalidate stale heap entries safely.
+    next_ttl_token: AtomicU64,
 }
 
 /// Handle for the background expiration sweeper.
@@ -325,27 +393,19 @@ impl MemoryEngine {
             max_bytes,
             used_bytes: AtomicUsize::new(0),
             eviction_cursor: AtomicUsize::new(0),
+            next_ttl_token: AtomicU64::new(1),
         }
     }
 
     /// Removes expired entries across all shards.
     ///
-    /// This is an O(n) scan and is intended for a periodic background sweep.
+    /// This walks only per-shard TTL heap heads plus any stale heap entries.
     pub fn purge_expired(&self, now: Instant) -> usize {
         let mut removed = 0;
         for shard in &self.shards {
             let mut inner = shard.inner.write();
-            let mut expired = Vec::new();
-            for &idx in inner.map.values() {
-                if let Some(node) = inner.nodes[idx].as_ref() {
-                    if node.is_expired(now) {
-                        expired.push(idx);
-                    }
-                }
-            }
-
-            for idx in expired {
-                if let Some(size) = inner.remove_idx(idx) {
+            while let Some(entry) = inner.pop_due_expiration(now) {
+                if let Some(size) = inner.remove_idx(entry.idx) {
                     removed += 1;
                     self.used_bytes.fetch_sub(size, Ordering::Relaxed);
                 }
@@ -393,6 +453,11 @@ impl MemoryEngine {
     /// Returns the shard responsible for a given key.
     fn shard_for(&self, key: &[u8]) -> &Shard {
         &self.shards[self.shard_index(key)]
+    }
+
+    /// Returns a fresh token for TTL heap scheduling.
+    fn next_ttl_token(&self) -> u64 {
+        self.next_ttl_token.fetch_add(1, Ordering::Relaxed)
     }
 
     /// Calculates entry size for eviction accounting.
@@ -504,6 +569,7 @@ impl KVEngine for MemoryEngine {
                 node.value = value_arc;
                 node.size = new_size;
                 node.expires_at = None;
+                node.ttl_token = self.next_ttl_token();
                 inner.touch(idx);
 
                 if new_size > old_size {
@@ -574,9 +640,13 @@ impl KVEngine for MemoryEngine {
             return Err(HkvError::NotFound);
         }
 
+        let token = self.next_ttl_token();
+        let expires_at = now + ttl;
         if let Some(node) = inner.nodes[idx].as_mut() {
-            node.expires_at = Some(now + ttl);
+            node.expires_at = Some(expires_at);
+            node.ttl_token = token;
         }
+        inner.schedule_expiration(idx, expires_at, token);
 
         Ok(())
     }
@@ -669,6 +739,43 @@ mod tests {
         let removed = engine.purge_expired(Instant::now());
         assert_eq!(removed, 1);
         assert!(engine.get(b"alpha").unwrap().is_none());
+    }
+
+    #[test]
+    fn expire_tracks_entries_in_ttl_heap() {
+        let engine = MemoryEngine::with_shard_count(1);
+        engine.set(b"alpha".to_vec(), b"value".to_vec()).unwrap();
+        engine.expire(b"alpha", Duration::from_secs(1)).unwrap();
+
+        let inner = engine.shards[0].inner.read();
+        assert_eq!(inner.ttl_heap.len(), 1);
+    }
+
+    #[test]
+    fn purge_expired_ignores_stale_deadline_after_ttl_refresh() {
+        let engine = MemoryEngine::with_shard_count(1);
+        engine.set(b"alpha".to_vec(), b"value".to_vec()).unwrap();
+        engine.expire(b"alpha", Duration::from_millis(1)).unwrap();
+        engine.expire(b"alpha", Duration::from_secs(1)).unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+
+        let removed = engine.purge_expired(Instant::now());
+        assert_eq!(removed, 0);
+        assert_eq!(&*engine.get(b"alpha").unwrap().unwrap(), b"value");
+    }
+
+    #[test]
+    fn set_clears_pending_expiration_without_deleting_new_value() {
+        let engine = MemoryEngine::with_shard_count(1);
+        engine.set(b"alpha".to_vec(), b"old".to_vec()).unwrap();
+        engine.expire(b"alpha", Duration::from_millis(1)).unwrap();
+        engine.set(b"alpha".to_vec(), b"new".to_vec()).unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+
+        let removed = engine.purge_expired(Instant::now());
+        assert_eq!(removed, 0);
+        assert_eq!(&*engine.get(b"alpha").unwrap().unwrap(), b"new");
+        assert_eq!(engine.ttl(b"alpha").unwrap(), TtlStatus::NoExpiry);
     }
 
     #[test]
