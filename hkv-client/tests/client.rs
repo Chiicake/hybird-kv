@@ -4,6 +4,7 @@ use std::thread;
 use std::time::Duration;
 
 use hkv_client::{ClientConfig, ClientTtl, KVClient};
+use socket2::SockRef;
 
 fn spawn_server(
     expected_commands: usize,
@@ -122,6 +123,10 @@ fn write_integer(stream: &mut TcpStream, value: i64) {
 }
 
 fn client_with_addr(addr: String) -> KVClient {
+    client_with_retry(addr, 0)
+}
+
+fn client_with_retry(addr: String, max_retries: usize) -> KVClient {
     let config = ClientConfig {
         addr,
         max_idle: 1,
@@ -129,8 +134,51 @@ fn client_with_addr(addr: String) -> KVClient {
         read_timeout: Some(Duration::from_secs(1)),
         write_timeout: Some(Duration::from_secs(1)),
         connect_timeout: Some(Duration::from_secs(1)),
+        max_retries,
     };
     KVClient::with_config(config).expect("client")
+}
+
+fn spawn_ping_reconnect_server() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr").to_string();
+
+    thread::spawn(move || {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+            let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+            let args = read_command(&mut reader).expect("read command");
+            assert_eq!(args, vec![b"PING".to_vec()]);
+            write_simple(&mut stream, "PONG");
+        }
+    });
+
+    addr
+}
+
+fn spawn_retryable_write_failure_server() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr").to_string();
+
+    thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("accept first");
+        SockRef::from(&stream)
+            .set_linger(Some(Duration::ZERO))
+            .expect("set linger");
+        drop(stream);
+
+        thread::sleep(Duration::from_millis(50));
+
+        let (mut stream, _) = listener.accept().expect("accept second");
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+        let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+        let args = read_command(&mut reader).expect("read command");
+        assert_eq!(args, vec![b"PING".to_vec()]);
+        write_simple(&mut stream, "PONG");
+    });
+
+    addr
 }
 
 #[test]
@@ -169,6 +217,24 @@ fn client_set_with_ttl_uses_single_set_ex_command() {
     client
         .set_with_ttl(b"key", b"value", Duration::from_secs(5))
         .expect("set_with_ttl");
+}
+
+#[test]
+fn client_reconnects_after_idle_connection_fails_health_check() {
+    let addr = spawn_ping_reconnect_server();
+    let client = client_with_addr(addr);
+
+    assert_eq!(client.ping(None).unwrap(), b"PONG");
+    thread::sleep(Duration::from_millis(50));
+    assert_eq!(client.ping(None).unwrap(), b"PONG");
+}
+
+#[test]
+fn client_retries_retryable_write_failure_on_fresh_connection() {
+    let addr = spawn_retryable_write_failure_server();
+    let client = client_with_retry(addr, 1);
+
+    assert_eq!(client.ping(None).unwrap(), b"PONG");
 }
 
 #[test]
