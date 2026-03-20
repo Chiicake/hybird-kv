@@ -4,13 +4,26 @@
 //! latency and allocation churn.
 
 use std::collections::VecDeque;
-use std::io::{BufReader, Write};
+use std::io::{BufReader, ErrorKind, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::client::{ClientError, ClientResult};
 use crate::resp::{RespValue, encode_command, read_response};
+
+pub(crate) enum ExecError {
+    Retryable(ClientError),
+    Fatal(ClientError),
+}
+
+impl ExecError {
+    pub(crate) fn into_client_error(self) -> ClientError {
+        match self {
+            ExecError::Retryable(err) | ExecError::Fatal(err) => err,
+        }
+    }
+}
 
 /// Pool configuration for the sync client.
 #[derive(Debug, Clone)]
@@ -62,19 +75,25 @@ impl ConnectionPool {
 
     /// Acquires a connection from the pool.
     pub fn acquire(&self) -> ClientResult<PooledConnection> {
-        if let Some(conn) = self.pop_idle() {
-            return Ok(PooledConnection::new(self.inner.clone(), conn));
-        }
-
-        if !self.try_reserve() {
-            return Err(ClientError::PoolExhausted);
-        }
-
-        match Connection::connect(&self.inner.config) {
-            Ok(conn) => Ok(PooledConnection::new(self.inner.clone(), conn)),
-            Err(err) => {
+        loop {
+            if let Some(conn) = self.pop_idle() {
+                if conn.is_healthy() {
+                    return Ok(PooledConnection::new(self.inner.clone(), conn));
+                }
                 self.release_slot();
-                Err(err)
+                continue;
+            }
+
+            if !self.try_reserve() {
+                return Err(ClientError::PoolExhausted);
+            }
+
+            match Connection::connect(&self.inner.config) {
+                Ok(conn) => return Ok(PooledConnection::new(self.inner.clone(), conn)),
+                Err(err) => {
+                    self.release_slot();
+                    return Err(err);
+                }
             }
         }
     }
@@ -125,7 +144,7 @@ impl PooledConnection {
     }
 
     /// Executes a RESP command and returns the parsed response.
-    pub fn exec(&mut self, args: &[&[u8]]) -> ClientResult<RespValue> {
+    pub fn exec(&mut self, args: &[&[u8]]) -> Result<RespValue, ExecError> {
         let conn = self.conn.as_mut().expect("connection exists");
         let response = conn.exec(args);
         if response.is_err() {
@@ -184,15 +203,46 @@ impl Connection {
         })
     }
 
-    fn exec(&mut self, args: &[&[u8]]) -> ClientResult<RespValue> {
+    fn exec(&mut self, args: &[&[u8]]) -> Result<RespValue, ExecError> {
         self.write_buf.clear();
         encode_command(args, &mut self.write_buf);
 
         let stream = self.reader.get_mut();
-        stream.write_all(&self.write_buf)?;
-        stream.flush()?;
+        stream
+            .write_all(&self.write_buf)
+            .map_err(classify_write_error)?;
+        stream.flush().map_err(classify_write_error)?;
 
-        read_response(&mut self.reader, &mut self.line_buf)
+        match read_response(&mut self.reader, &mut self.line_buf) {
+            Ok(response) => Ok(response),
+            Err(err) => Err(classify_read_error(err, self.line_buf.is_empty())),
+        }
+    }
+
+    fn is_healthy(&self) -> bool {
+        if !self.reader.buffer().is_empty() {
+            return false;
+        }
+
+        let stream = self.reader.get_ref();
+        if stream.set_nonblocking(true).is_err() {
+            return false;
+        }
+
+        let mut byte = [0u8; 1];
+        let healthy = match stream.peek(&mut byte) {
+            Ok(0) => false,
+            Ok(_) => false,
+            Err(err) if err.kind() == ErrorKind::WouldBlock => true,
+            Err(err) if err.kind() == ErrorKind::Interrupted => true,
+            Err(_) => false,
+        };
+
+        if stream.set_nonblocking(false).is_err() {
+            return false;
+        }
+
+        healthy
     }
 }
 
@@ -206,4 +256,51 @@ fn connect_stream(config: &PoolConfig) -> ClientResult<TcpStream> {
         None => TcpStream::connect(addr)?,
     };
     Ok(stream)
+}
+
+fn classify_write_error(err: std::io::Error) -> ExecError {
+    if is_retryable_write_error_kind(err.kind()) {
+        ExecError::Retryable(ClientError::Io(err))
+    } else {
+        ExecError::Fatal(ClientError::Io(err))
+    }
+}
+
+fn is_retryable_write_error_kind(kind: ErrorKind) -> bool {
+    matches!(
+        kind,
+        ErrorKind::BrokenPipe
+            | ErrorKind::ConnectionReset
+            | ErrorKind::ConnectionAborted
+            | ErrorKind::NotConnected
+            | ErrorKind::TimedOut
+            | ErrorKind::UnexpectedEof
+            | ErrorKind::Interrupted
+    )
+}
+
+fn classify_read_error(err: ClientError, no_response_bytes: bool) -> ExecError {
+    if !no_response_bytes {
+        return ExecError::Fatal(err);
+    }
+
+    match err {
+        ClientError::Io(io_err) if is_retryable_read_error_kind(io_err.kind()) => {
+            ExecError::Retryable(ClientError::Io(io_err))
+        }
+        ClientError::Protocol => ExecError::Retryable(ClientError::Protocol),
+        other => ExecError::Fatal(other),
+    }
+}
+
+fn is_retryable_read_error_kind(kind: ErrorKind) -> bool {
+    matches!(
+        kind,
+        ErrorKind::ConnectionReset
+            | ErrorKind::ConnectionAborted
+            | ErrorKind::NotConnected
+            | ErrorKind::TimedOut
+            | ErrorKind::UnexpectedEof
+            | ErrorKind::Interrupted
+    )
 }

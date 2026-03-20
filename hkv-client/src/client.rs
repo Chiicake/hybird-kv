@@ -21,6 +21,7 @@
 //!     read_timeout: Some(Duration::from_secs(1)),
 //!     write_timeout: Some(Duration::from_secs(1)),
 //!     connect_timeout: Some(Duration::from_secs(1)),
+//!     max_retries: 1,
 //! };
 //! let client = KVClient::with_config(config).expect("connect");
 //! let _ = client.ping(None).expect("ping");
@@ -29,7 +30,9 @@
 //! ## Connection Pooling Behavior
 //! - Each request borrows one connection, performs one round-trip, then returns it.
 //! - If the pool hits `max_total`, callers get a `PoolExhausted` error immediately.
+//! - Idle connections are health-checked before reuse and dropped if the peer has closed them.
 //! - Connections that hit IO/protocol errors are discarded to avoid reusing bad state.
+//! - Retryable connection/setup failures can be retried on a fresh connection.
 //!
 //! ## Design Principles
 //! 1. **Facade Pattern**: `KVClient` hides pooling and protocol details.
@@ -40,7 +43,7 @@
 use std::fmt;
 use std::time::Duration;
 
-use crate::pool::{ConnectionPool, PoolConfig};
+use crate::pool::{ConnectionPool, ExecError, PoolConfig};
 use crate::resp::RespValue;
 
 /// Result type for the sync client.
@@ -112,6 +115,8 @@ pub struct ClientConfig {
     pub write_timeout: Option<Duration>,
     /// Optional TCP connect timeout.
     pub connect_timeout: Option<Duration>,
+    /// Maximum transparent retries for retryable connection/setup failures.
+    pub max_retries: usize,
 }
 
 impl Default for ClientConfig {
@@ -123,6 +128,7 @@ impl Default for ClientConfig {
             read_timeout: None,
             write_timeout: None,
             connect_timeout: None,
+            max_retries: 1,
         }
     }
 }
@@ -133,6 +139,7 @@ impl Default for ClientConfig {
 /// a connection, executes one command, and returns the connection to the pool.
 pub struct KVClient {
     pool: ConnectionPool,
+    max_retries: usize,
 }
 
 impl KVClient {
@@ -153,7 +160,10 @@ impl KVClient {
             write_timeout: config.write_timeout,
             connect_timeout: config.connect_timeout,
         })?;
-        Ok(KVClient { pool })
+        Ok(KVClient {
+            pool,
+            max_retries: config.max_retries,
+        })
     }
 
     /// Fetches a value by key.
@@ -162,8 +172,7 @@ impl KVClient {
     ///
     /// The server response is expected to be a bulk string or null bulk string.
     pub fn get(&self, key: &[u8]) -> ClientResult<Option<Vec<u8>>> {
-        let mut conn = self.pool.acquire()?;
-        match conn.exec(&[b"GET", key])? {
+        match self.exec_with_retry(&[b"GET", key])? {
             RespValue::Bulk(data) => Ok(data),
             RespValue::Error(message) => Err(ClientError::Server { message }),
             _ => Err(ClientError::UnexpectedResponse),
@@ -174,8 +183,7 @@ impl KVClient {
     ///
     /// Uses RESP2 `SET key value` and expects a simple string response.
     pub fn set(&self, key: &[u8], value: &[u8]) -> ClientResult<()> {
-        let mut conn = self.pool.acquire()?;
-        match conn.exec(&[b"SET", key, value])? {
+        match self.exec_with_retry(&[b"SET", key, value])? {
             RespValue::Simple(_) => Ok(()),
             RespValue::Error(message) => Err(ClientError::Server { message }),
             _ => Err(ClientError::UnexpectedResponse),
@@ -187,8 +195,7 @@ impl KVClient {
     /// Uses RESP2 `SET key value EX seconds`. TTL seconds are encoded without heap allocations.
     pub fn set_with_ttl(&self, key: &[u8], value: &[u8], ttl: Duration) -> ClientResult<()> {
         let (seconds, len) = encode_u64(ttl.as_secs());
-        let mut conn = self.pool.acquire()?;
-        match conn.exec(&[b"SET", key, value, b"EX", &seconds[..len]])? {
+        match self.exec_with_retry(&[b"SET", key, value, b"EX", &seconds[..len]])? {
             RespValue::Simple(_) => Ok(()),
             RespValue::Error(message) => Err(ClientError::Server { message }),
             _ => Err(ClientError::UnexpectedResponse),
@@ -199,8 +206,7 @@ impl KVClient {
     ///
     /// `DEL` returns an integer count. Non-zero maps to true.
     pub fn delete(&self, key: &[u8]) -> ClientResult<bool> {
-        let mut conn = self.pool.acquire()?;
-        match conn.exec(&[b"DEL", key])? {
+        match self.exec_with_retry(&[b"DEL", key])? {
             RespValue::Integer(count) => Ok(count > 0),
             RespValue::Error(message) => Err(ClientError::Server { message }),
             _ => Err(ClientError::UnexpectedResponse),
@@ -212,8 +218,7 @@ impl KVClient {
     /// Mirrors Redis `EXPIRE` semantics: 1 when applied, 0 when missing.
     pub fn expire(&self, key: &[u8], ttl: Duration) -> ClientResult<bool> {
         let (seconds, len) = encode_u64(ttl.as_secs());
-        let mut conn = self.pool.acquire()?;
-        match conn.exec(&[b"EXPIRE", key, &seconds[..len]])? {
+        match self.exec_with_retry(&[b"EXPIRE", key, &seconds[..len]])? {
             RespValue::Integer(value) => Ok(value == 1),
             RespValue::Error(message) => Err(ClientError::Server { message }),
             _ => Err(ClientError::UnexpectedResponse),
@@ -224,8 +229,7 @@ impl KVClient {
     ///
     /// Converts Redis TTL conventions (-2 missing, -1 no expiry) into `ClientTtl`.
     pub fn ttl(&self, key: &[u8]) -> ClientResult<ClientTtl> {
-        let mut conn = self.pool.acquire()?;
-        match conn.exec(&[b"TTL", key])? {
+        match self.exec_with_retry(&[b"TTL", key])? {
             RespValue::Integer(value) if value == -2 => Ok(ClientTtl::Missing),
             RespValue::Integer(value) if value == -1 => Ok(ClientTtl::NoExpiry),
             RespValue::Integer(value) if value >= 0 => {
@@ -240,10 +244,9 @@ impl KVClient {
     ///
     /// A payload triggers bulk string echo; otherwise a simple "PONG".
     pub fn ping(&self, payload: Option<&[u8]>) -> ClientResult<Vec<u8>> {
-        let mut conn = self.pool.acquire()?;
         let response = match payload {
-            Some(data) => conn.exec(&[b"PING", data])?,
-            None => conn.exec(&[b"PING"])?,
+            Some(data) => self.exec_with_retry(&[b"PING", data])?,
+            None => self.exec_with_retry(&[b"PING"])?,
         };
         match response {
             RespValue::Simple(text) => Ok(text),
@@ -257,12 +260,49 @@ impl KVClient {
     ///
     /// Returns the raw bulk payload; parsing is left to the caller.
     pub fn info(&self) -> ClientResult<Vec<u8>> {
-        let mut conn = self.pool.acquire()?;
-        match conn.exec(&[b"INFO"])? {
+        match self.exec_with_retry(&[b"INFO"])? {
             RespValue::Bulk(Some(data)) => Ok(data),
             RespValue::Error(message) => Err(ClientError::Server { message }),
             _ => Err(ClientError::UnexpectedResponse),
         }
+    }
+
+    fn exec_with_retry(&self, args: &[&[u8]]) -> ClientResult<RespValue> {
+        let mut attempts = 0usize;
+
+        loop {
+            let mut conn = match self.pool.acquire() {
+                Ok(conn) => conn,
+                Err(err) if attempts < self.max_retries && is_retryable_connect_error(&err) => {
+                    attempts += 1;
+                    continue;
+                }
+                Err(err) => return Err(err),
+            };
+
+            match conn.exec(args) {
+                Ok(response) => return Ok(response),
+                Err(ExecError::Retryable(err)) if attempts < self.max_retries => {
+                    attempts += 1;
+                }
+                Err(err) => return Err(err.into_client_error()),
+            }
+        }
+    }
+}
+
+fn is_retryable_connect_error(err: &ClientError) -> bool {
+    match err {
+        ClientError::Io(err) => matches!(
+            err.kind(),
+            std::io::ErrorKind::ConnectionRefused
+                | std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::ConnectionAborted
+                | std::io::ErrorKind::NotConnected
+                | std::io::ErrorKind::TimedOut
+                | std::io::ErrorKind::Interrupted
+        ),
+        _ => false,
     }
 }
 
