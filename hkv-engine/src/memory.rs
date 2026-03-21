@@ -737,6 +737,8 @@ fn normalize_shard_count(count: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Barrier;
+    use std::thread;
 
     #[test]
     fn set_get_roundtrip() {
@@ -744,6 +746,29 @@ mod tests {
         engine.set(b"alpha".to_vec(), b"value".to_vec()).unwrap();
         let value = engine.get(b"alpha").unwrap().unwrap();
         assert_eq!(&*value, b"value");
+    }
+
+    #[test]
+    fn set_get_supports_empty_keys_and_values() {
+        let engine = MemoryEngine::with_shard_count(2);
+        engine.set(Vec::new(), Vec::new()).unwrap();
+
+        let value = engine.get(b"").unwrap().unwrap();
+        assert!(value.is_empty());
+        assert_eq!(engine.ttl(b"").unwrap(), TtlStatus::NoExpiry);
+        assert!(engine.delete(b"").unwrap());
+        assert!(engine.get(b"").unwrap().is_none());
+    }
+
+    #[test]
+    fn set_get_supports_large_values() {
+        let engine = MemoryEngine::with_shard_count(2);
+        let large = vec![b'x'; 256 * 1024];
+        engine.set(b"large".to_vec(), large.clone()).unwrap();
+
+        let value = engine.get(b"large").unwrap().unwrap();
+        assert_eq!(value.len(), large.len());
+        assert_eq!(&*value, large.as_slice());
     }
 
     #[test]
@@ -887,5 +912,49 @@ mod tests {
         engine.expire(b"alpha", Duration::from_millis(1)).unwrap();
         std::thread::sleep(Duration::from_millis(5));
         assert_eq!(engine.ttl(b"alpha").unwrap(), TtlStatus::Missing);
+    }
+
+    #[test]
+    fn concurrent_access_preserves_per_key_correctness() {
+        const THREADS: usize = 8;
+        const OPS_PER_THREAD: usize = 32;
+
+        let engine = Arc::new(MemoryEngine::with_shard_count(2));
+        let barrier = Arc::new(Barrier::new(THREADS));
+        let mut handles = Vec::with_capacity(THREADS);
+
+        for thread_id in 0..THREADS {
+            let engine = Arc::clone(&engine);
+            let barrier = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+
+                for op in 0..OPS_PER_THREAD {
+                    let key = format!("concurrent:{thread_id}:{op}").into_bytes();
+                    let value = format!("value:{thread_id}:{op}").into_bytes();
+
+                    engine.set(key.clone(), value.clone()).unwrap();
+                    assert_eq!(&*engine.get(&key).unwrap().unwrap(), value.as_slice());
+
+                    if op % 2 == 0 {
+                        assert!(engine.delete(&key).unwrap());
+                        assert!(engine.get(&key).unwrap().is_none());
+                        engine.set(key.clone(), value.clone()).unwrap();
+                    }
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        for thread_id in 0..THREADS {
+            for op in [0, OPS_PER_THREAD - 1] {
+                let key = format!("concurrent:{thread_id}:{op}").into_bytes();
+                let value = format!("value:{thread_id}:{op}").into_bytes();
+                assert_eq!(&*engine.get(&key).unwrap().unwrap(), value.as_slice());
+            }
+        }
     }
 }
