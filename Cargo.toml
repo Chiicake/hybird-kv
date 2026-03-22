@@ -6,7 +6,9 @@ members = [
     "hkv-server",
     "hkv-client",
     "hkv-kernel",
-    "hkv-gui", "hkv-bench",
+    "hkv-gui",
+    "hkv-gui/src-tauri",
+    "hkv-bench",
 ]
 
 [workspace.package]

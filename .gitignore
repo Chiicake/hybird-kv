@@ -53,5 +53,8 @@ $RECYCLE.BIN/
 .dockerignore
 *.orig
 coverage/
+node_modules/
+dist/
+hkv-gui/src-tauri/gen/
 
 .gitnexus

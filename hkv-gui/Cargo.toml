@@ -3,4 +3,6 @@ name = "hkv-gui"
 version = "0.1.0"
 edition = "2024"
 
+# Workspace compatibility shim only.
+# The authoritative desktop backend lives in hkv-gui/src-tauri.
 [dependencies]
