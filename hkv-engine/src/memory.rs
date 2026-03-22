@@ -740,6 +740,22 @@ mod tests {
     use std::sync::Barrier;
     use std::thread;
 
+    fn miri_aware_ttl(default: Duration, under_miri: Duration) -> Duration {
+        if cfg!(miri) { under_miri } else { default }
+    }
+
+    fn refreshed_ttl_short() -> Duration {
+        miri_aware_ttl(Duration::from_millis(1), Duration::from_millis(100))
+    }
+
+    fn refreshed_ttl_long() -> Duration {
+        miri_aware_ttl(Duration::from_secs(1), Duration::from_secs(2))
+    }
+
+    fn refreshed_ttl_sleep() -> Duration {
+        miri_aware_ttl(Duration::from_millis(5), Duration::from_millis(200))
+    }
+
     #[test]
     fn set_get_roundtrip() {
         let engine = MemoryEngine::with_shard_count(4);
@@ -817,7 +833,7 @@ mod tests {
             .set_with_ttl(
                 b"alpha".to_vec(),
                 b"value".to_vec(),
-                Duration::from_millis(20),
+                miri_aware_ttl(Duration::from_millis(20), Duration::from_secs(2)),
             )
             .unwrap();
 
@@ -832,12 +848,12 @@ mod tests {
     fn set_with_ttl_refreshes_deadline_without_stale_heap_deleting_value() {
         let engine = MemoryEngine::with_shard_count(1);
         engine
-            .set_with_ttl(b"alpha".to_vec(), b"old".to_vec(), Duration::from_millis(1))
+            .set_with_ttl(b"alpha".to_vec(), b"old".to_vec(), refreshed_ttl_short())
             .unwrap();
         engine
-            .set_with_ttl(b"alpha".to_vec(), b"new".to_vec(), Duration::from_secs(1))
+            .set_with_ttl(b"alpha".to_vec(), b"new".to_vec(), refreshed_ttl_long())
             .unwrap();
-        std::thread::sleep(Duration::from_millis(5));
+        std::thread::sleep(refreshed_ttl_sleep());
 
         let removed = engine.purge_expired(Instant::now());
         assert_eq!(removed, 0);
@@ -852,9 +868,9 @@ mod tests {
     fn purge_expired_ignores_stale_deadline_after_ttl_refresh() {
         let engine = MemoryEngine::with_shard_count(1);
         engine.set(b"alpha".to_vec(), b"value".to_vec()).unwrap();
-        engine.expire(b"alpha", Duration::from_millis(1)).unwrap();
-        engine.expire(b"alpha", Duration::from_secs(1)).unwrap();
-        std::thread::sleep(Duration::from_millis(5));
+        engine.expire(b"alpha", refreshed_ttl_short()).unwrap();
+        engine.expire(b"alpha", refreshed_ttl_long()).unwrap();
+        std::thread::sleep(refreshed_ttl_sleep());
 
         let removed = engine.purge_expired(Instant::now());
         assert_eq!(removed, 0);
