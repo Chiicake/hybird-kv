@@ -28,6 +28,7 @@ fn redis_cli_available() -> bool {
 
 fn run_redis_cli(port: u16, args: &[&str]) -> std::io::Result<String> {
     let output = Command::new("redis-cli")
+        .arg("--no-raw")
         .arg("-p")
         .arg(port.to_string())
         .args(args)
@@ -39,7 +40,19 @@ fn run_redis_cli(port: u16, args: &[&str]) -> std::io::Result<String> {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let normalized = stdout
+        .strip_prefix("(integer) ")
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            stdout
+                .strip_prefix('"')
+                .and_then(|value| value.strip_suffix('"'))
+                .map(ToOwned::to_owned)
+        })
+        .unwrap_or(stdout);
+
+    Ok(normalized)
 }
 
 async fn spawn_test_server() -> std::io::Result<(SocketAddr, oneshot::Sender<()>)> {
@@ -67,7 +80,7 @@ async fn spawn_test_server() -> std::io::Result<(SocketAddr, oneshot::Sender<()>
     Ok((addr, shutdown_tx))
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn redis_cli_basic_commands() {
     if !redis_cli_available() {
         eprintln!("redis-cli not found; skipping integration test");
