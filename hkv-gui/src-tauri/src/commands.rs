@@ -61,26 +61,18 @@ pub fn register_commands(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
 
 #[tauri::command]
 pub async fn start_benchmark(
-    _state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, AppState>,
     request: BenchmarkRunRequest,
 ) -> Result<BenchmarkRun, ApiError> {
-    let _ = request;
-
-    Err(ApiError::not_implemented(
-        "benchmark orchestration is not implemented yet",
-    ))
+    state.start_benchmark(request).map_err(ApiError::runtime)
 }
 
 #[tauri::command]
 pub async fn stop_benchmark(
-    _state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, AppState>,
     run_id: String,
 ) -> Result<BenchmarkRun, ApiError> {
-    let _ = run_id;
-
-    Err(ApiError::not_implemented(
-        "benchmark orchestration is not implemented yet",
-    ))
+    state.stop_benchmark(&run_id).map_err(ApiError::runtime)
 }
 
 #[tauri::command]
@@ -187,6 +179,8 @@ mod tests {
             event: "queued".into(),
             run_id: "run-001".into(),
             emitted_at: "2026-03-22T10:00:01Z".into(),
+            message: Some("queued for execution".into()),
+            error: None,
         };
 
         let server_event = ServerEventEnvelope {
@@ -202,6 +196,8 @@ mod tests {
 
         assert_eq!(benchmark_json["channel"], BENCHMARK_EVENT_CHANNEL);
         assert_eq!(benchmark_json["runId"], "run-001");
+        assert_eq!(benchmark_json["message"], "queued for execution");
+        assert!(benchmark_json["error"].is_null());
         assert_eq!(server_json["channel"], SERVER_EVENT_CHANNEL);
         assert_eq!(server_json["status"]["state"], "stopped");
         assert!(server_json["info"].is_null());

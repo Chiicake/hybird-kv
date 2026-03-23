@@ -1314,10 +1314,12 @@ version = "0.1.0"
 name = "hkv-gui-desktop"
 version = "0.1.0"
 dependencies = [
+ "hkv-client",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
+ "tokio",
 ]
 
 [[package]]

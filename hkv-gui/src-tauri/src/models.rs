@@ -14,6 +14,26 @@ pub struct BenchmarkRunRequest {
     pub pipeline: u32,
 }
 
+impl BenchmarkRunRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.runner.trim().is_empty() {
+            return Err("runner must not be empty".into());
+        }
+
+        if self.target_addr.trim().is_empty() || !self.target_addr.contains(':') {
+            return Err("target_addr must use host:port format".into());
+        }
+
+        if self.clients == 0 || self.requests == 0 || self.data_size == 0 || self.pipeline == 0 {
+            return Err(
+                "clients, requests, data_size, and pipeline must be greater than zero".into(),
+            );
+        }
+
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct BenchmarkResult {
@@ -91,6 +111,8 @@ pub struct BenchmarkEventEnvelope {
     pub event: String,
     pub run_id: String,
     pub emitted_at: String,
+    pub message: Option<String>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -169,6 +191,24 @@ mod tests {
         assert_eq!(
             object_keys(&request),
             schema_keys(&schema, "benchmarkRunRequest")
+        );
+        assert!(request.validate().is_ok());
+    }
+
+    #[test]
+    fn benchmark_run_request_validation_rejects_invalid_values() {
+        let request = BenchmarkRunRequest {
+            runner: String::new(),
+            target_addr: "127.0.0.1".into(),
+            clients: 0,
+            requests: 0,
+            data_size: 0,
+            pipeline: 0,
+        };
+
+        assert_eq!(
+            request.validate().expect_err("request should be invalid"),
+            "runner must not be empty"
         );
     }
 
@@ -274,6 +314,8 @@ mod tests {
             event: "queued".into(),
             run_id: "run-003".into(),
             emitted_at: "2026-03-22T10:06:01Z".into(),
+            message: Some("queued for execution".into()),
+            error: None,
         };
 
         let server_event = ServerEventEnvelope {
@@ -296,6 +338,8 @@ mod tests {
 
         assert_eq!(benchmark_json["channel"], BENCHMARK_EVENT_CHANNEL);
         assert_eq!(benchmark_json["runId"], "run-003");
+        assert_eq!(benchmark_json["message"], "queued for execution");
+        assert!(benchmark_json["error"].is_null());
         assert_eq!(server_json["info"]["instantaneousOpsPerSec"], 45);
         assert_eq!(server_json["status"]["pid"], 4242);
         assert_eq!(object_keys(&info), schema_keys(&schema, "infoSnapshot"));

@@ -1,8 +1,15 @@
+use crate::benchmark_manager::BenchmarkManager;
 use crate::info_poller::InfoPoller;
-use crate::models::{InfoSnapshot, NormalizedRunSummary, ServerStatus, StartServerRequest};
+use crate::models::{
+    BenchmarkRun, BenchmarkRunRequest, InfoSnapshot, NormalizedRunSummary, ServerStatus,
+    StartServerRequest,
+};
+use crate::runners::redis_benchmark::RedisBenchmarkRunner;
 use crate::server_manager::ServerManager;
+use std::sync::Arc;
 
 pub struct AppState {
+    benchmark_manager: BenchmarkManager,
     server_manager: ServerManager,
     info_poller: InfoPoller,
 }
@@ -10,6 +17,7 @@ pub struct AppState {
 impl Default for AppState {
     fn default() -> Self {
         Self {
+            benchmark_manager: BenchmarkManager::new(vec![Arc::new(RedisBenchmarkRunner::new())]),
             server_manager: ServerManager::new(),
             info_poller: InfoPoller::new(),
         }
@@ -19,13 +27,26 @@ impl Default for AppState {
 impl AppState {
     pub(crate) fn with_parts(server_manager: ServerManager, info_poller: InfoPoller) -> Self {
         Self {
+            benchmark_manager: BenchmarkManager::new(vec![Arc::new(RedisBenchmarkRunner::new())]),
             server_manager,
             info_poller,
         }
     }
 
     pub fn list_runs(&self) -> Vec<NormalizedRunSummary> {
-        Vec::new()
+        self.benchmark_manager.list_runs()
+    }
+
+    pub fn start_benchmark(&self, request: BenchmarkRunRequest) -> Result<BenchmarkRun, String> {
+        self.benchmark_manager
+            .start(request)
+            .map_err(|error| error.message)
+    }
+
+    pub fn stop_benchmark(&self, run_id: &str) -> Result<BenchmarkRun, String> {
+        self.benchmark_manager
+            .stop(run_id)
+            .map_err(|error| error.message)
     }
 
     pub fn start_server(

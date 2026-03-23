@@ -1,6 +1,8 @@
 mod commands;
+mod benchmark_manager;
 mod info_poller;
 mod models;
+mod runners;
 mod server_manager;
 mod state;
 
