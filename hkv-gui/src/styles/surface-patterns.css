@@ -244,12 +244,25 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
-  max-height: 320px;
+  min-height: 420px;
+  max-height: 520px;
   padding: 14px;
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
   background: rgba(2, 8, 14, 0.72);
+  font-family: "Noto Sans Mono", "DejaVu Sans Mono", "Liberation Mono", monospace;
+}
+
+.benchmark-terminal-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(320px, 0.8fr);
+  gap: 18px;
+}
+
+.benchmark-terminal-layout__sidebar {
+  display: grid;
+  gap: 18px;
 }
 
 .benchmark-console__entry {
@@ -262,6 +275,10 @@
 .benchmark-console__entry:last-child {
   padding-bottom: 0;
   border-bottom: 0;
+}
+
+.benchmark-console__entry--error span {
+  color: var(--alert);
 }
 
 .benchmark-console__entry strong,
@@ -419,6 +436,7 @@
   .server-metric-grid,
   .benchmark-form-grid,
   .benchmark-metric-grid,
+  .benchmark-terminal-layout,
   .runs-list__metrics,
   .runs-detail-grid,
   .runs-metric-grid {

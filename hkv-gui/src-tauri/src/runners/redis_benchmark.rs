@@ -1,6 +1,6 @@
 use crate::models::{BenchmarkResult, BenchmarkRunRequest};
 use crate::runners::{ActiveBenchmark, BenchmarkLifecycleEvent, BenchmarkRunner, RunnerError};
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc::Sender, Arc, Mutex};
@@ -252,11 +252,13 @@ impl BenchmarkRunner for RedisBenchmarkRunner {
         let parser = RedisBenchmarkRunner::new();
 
         thread::spawn(move || {
+            let stdout_events = observer_events.clone();
+            let stderr_events = observer_events.clone();
             let stdout_reader = stdout;
             let stderr_reader = stderr;
 
-            let stdout_thread = thread::spawn(move || read_stream(stdout_reader));
-            let stderr_thread = thread::spawn(move || read_stream(stderr_reader));
+            let stdout_thread = thread::spawn(move || read_stream(stdout_reader, stdout_events));
+            let stderr_thread = thread::spawn(move || read_stream(stderr_reader, stderr_events));
 
             let exit_code = {
                 let mut guard = observer_process
@@ -311,9 +313,31 @@ impl BenchmarkRunner for RedisBenchmarkRunner {
     }
 }
 
-fn read_stream(mut reader: Box<dyn Read + Send>) -> String {
+fn read_stream(
+    mut reader: Box<dyn Read + Send>,
+    events: Sender<BenchmarkLifecycleEvent>,
+) -> String {
     let mut buffer = String::new();
     let _ = reader.read_to_string(&mut buffer);
+
+    let mut lines = BufReader::new(buffer.as_bytes());
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match lines.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    let _ = events.send(BenchmarkLifecycleEvent::Progress {
+                        message: trimmed.to_string(),
+                    });
+                }
+            }
+            Err(_) => break,
+        }
+    }
+
     buffer
 }
 
@@ -563,6 +587,36 @@ mod tests {
         assert_eq!(result.p99_latency_ms, 1.020);
         assert_eq!(result.duration_ms, 960);
         assert_eq!(result.dataset_bytes, 12800000);
+    }
+
+    #[test]
+    fn start_streams_stdout_and_stderr_lines_as_progress_events() {
+        let spawner = Arc::new(FakeSpawner::successful(FakeProcess {
+            exit_code: 0,
+            stdout: Some(Box::new(Cursor::new(
+                b"PING_INLINE,1000.0\nrequests summary requests=100 bytes=12800 duration_ms=10 avg_ms=0.2\nlatency summary p50=0.1 p95=0.3 p99=0.5\n"
+                    .to_vec(),
+            ))),
+            stderr: Some(Box::new(Cursor::new(b"WARNING: warmup\n".to_vec()))),
+            killed: Arc::new(AtomicBool::new(false)),
+        }));
+        let runner = RedisBenchmarkRunner::with_spawner(spawner);
+        let (sender, receiver) = mpsc::channel();
+
+        let _handle = runner
+            .start(sample_request(), sender)
+            .expect("runner should start");
+
+        let events: Vec<BenchmarkLifecycleEvent> = receiver.iter().take(7).collect();
+
+        assert!(events.iter().any(|event| matches!(
+            event,
+            BenchmarkLifecycleEvent::Progress { message } if message.contains("PING_INLINE,1000.0")
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            BenchmarkLifecycleEvent::Progress { message } if message.contains("WARNING: warmup")
+        )));
     }
 
     #[test]

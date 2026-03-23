@@ -248,11 +248,13 @@ export function Benchmarks() {
         </article>
       </div>
 
-      <MetricsCards run={activeRun} />
-
-      <div className="page-panel-grid">
+      <div className="benchmark-terminal-layout">
         <RunConsole activeRunId={activeRun?.id ?? null} events={consoleEvents} />
-        <ResultCharts run={activeRun} />
+
+        <div className="benchmark-terminal-layout__sidebar">
+          <MetricsCards run={activeRun} />
+          <ResultCharts run={activeRun} />
+        </div>
       </div>
     </section>
   );

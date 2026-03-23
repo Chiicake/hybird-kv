@@ -8,11 +8,11 @@ type RunConsoleProps = {
 export function RunConsole({ activeRunId, events }: RunConsoleProps) {
   return (
     <article className="panel panel--stacked benchmark-panel">
-      <p className="panel__label">Run console</p>
+      <p className="panel__label">Terminal output</p>
       <h2>{activeRunId ?? "No active benchmark"}</h2>
       <p>
-        Lifecycle messages stream from the desktop backend and stay scoped to the
-        currently active run.
+        Live stdout and stderr from the desktop runner stay scoped to the current
+        benchmark session.
       </p>
 
       {events.length === 0 ? (
@@ -20,7 +20,10 @@ export function RunConsole({ activeRunId, events }: RunConsoleProps) {
       ) : (
         <div className="benchmark-console" role="log" aria-label="Benchmark console">
           {events.map((event, index) => (
-            <div key={`${event.emittedAt}-${event.event}-${index}`} className="benchmark-console__entry">
+            <div
+              key={`${event.emittedAt}-${event.event}-${index}`}
+              className={`benchmark-console__entry${event.error ? " benchmark-console__entry--error" : ""}`}
+            >
               <strong>{event.event}</strong>
               <span>{event.message ?? event.error ?? "event received"}</span>
             </div>
