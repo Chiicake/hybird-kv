@@ -16,6 +16,6 @@
   --radius-lg: 20px;
   --radius-md: 14px;
   --content-width: 1180px;
-  --font-display: "Segoe UI", "Trebuchet MS", sans-serif;
-  --font-body: "Segoe UI", "Trebuchet MS", sans-serif;
+  --font-display: "Noto Sans", "DejaVu Sans", "Liberation Sans", "Cantarell", "Ubuntu", sans-serif;
+  --font-body: "Noto Sans", "DejaVu Sans", "Liberation Sans", "Cantarell", "Ubuntu", sans-serif;
 }

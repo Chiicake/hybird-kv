@@ -21,6 +21,24 @@ const DEFAULT_STATUS: ServerStatusType = {
 
 const AUTO_REFRESH_ENABLED = import.meta.env.MODE !== "test";
 
+function formatStartServerError(message: string, address: string) {
+  const normalized = message.trim();
+
+  if (/no such file or directory/i.test(normalized)) {
+    return `${normalized}. Run \`cargo build -p hkv-server\` first so the local server binary exists, then try Start local server again.`;
+  }
+
+  if (/address already in use|addrinuse/i.test(normalized)) {
+    return `${normalized}. Another process is already using ${address}. Stop that process or choose a different port.`;
+  }
+
+  if (/exited before becoming ready|exit code/i.test(normalized)) {
+    return `${normalized}. The server started and exited immediately. Try running \`cargo run -p hkv-server\` in a terminal to inspect the startup error.`;
+  }
+
+  return `${normalized}. Make sure the local hkv-server binary is available and ${address} is usable.`;
+}
+
 export function Server() {
   const [status, setStatus] = useState<ServerStatusType>(DEFAULT_STATUS);
   const [snapshot, setSnapshot] = useState<InfoSnapshot | null>(null);
@@ -79,7 +97,8 @@ export function Server() {
       const nextInfo = await currentInfoSnapshot();
       setSnapshot(nextInfo);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unable to start local server";
+      const rawMessage = error instanceof Error ? error.message : "Unable to start local server";
+      const message = formatStartServerError(rawMessage, "127.0.0.1:6380");
       setStatus((current) => ({ ...current, lastError: message }));
     } finally {
       setBusy(false);

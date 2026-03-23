@@ -390,7 +390,7 @@ fn default_address_string() -> String {
 fn default_server_binary_path() -> PathBuf {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
-        .nth(3)
+        .nth(2)
         .expect("workspace root should exist");
     workspace_root
         .join("target")
@@ -415,7 +415,10 @@ fn iso_timestamp(time: SystemTime) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_info_snapshot, LaunchSpec, ManagedChild, ProcessLauncher, ServerManager};
+    use super::{
+        default_server_binary_path, parse_info_snapshot, LaunchSpec, ManagedChild, ProcessLauncher,
+        ServerManager,
+    };
     use crate::models::StartServerRequest;
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
@@ -528,7 +531,24 @@ mod tests {
             specs[0].env,
             vec![("HKV_ADDR".into(), "127.0.0.1:6380".into())]
         );
-        assert!(specs[0].program.ends_with("target/debug/hkv-server"));
+        assert_eq!(specs[0].program, default_server_binary_path());
+    }
+
+    #[test]
+    fn default_binary_path_points_at_this_workspace_target_directory() {
+        let expected = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .expect("workspace root should exist")
+            .join("target")
+            .join("debug")
+            .join(if cfg!(windows) {
+                "hkv-server.exe"
+            } else {
+                "hkv-server"
+            });
+
+        assert_eq!(default_server_binary_path(), expected);
     }
 
     #[test]

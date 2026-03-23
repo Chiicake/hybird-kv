@@ -7,7 +7,7 @@ export type RuntimePreferences = {
 export const DEFAULT_RUNTIME_PREFERENCES: RuntimePreferences = {
   benchmarkBinaryPath: "",
   benchmarkTargetHost: "127.0.0.1",
-  benchmarkTargetPort: "6379"
+  benchmarkTargetPort: "6380"
 };
 
 export const RUNTIME_PREFERENCES_STORAGE_KEY = "hkv-gui.runtime-preferences.v1";

@@ -229,6 +229,26 @@ describe("gui api contracts", () => {
     expect(invoke).toHaveBeenNthCalledWith(4, "current_info_snapshot", undefined);
   });
 
+  it("normalizes tauri invoke errors into readable messages", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+
+    vi.mocked(invoke).mockRejectedValueOnce({ message: "server boot failed" });
+    await expect(startServer({ address: "127.0.0.1", port: 6380 })).rejects.toThrow(
+      /server boot failed/i
+    );
+
+    vi.mocked(invoke).mockRejectedValueOnce("plain string failure");
+    await expect(stopServer()).rejects.toThrow(/plain string failure/i);
+
+    vi.mocked(invoke).mockRejectedValueOnce({
+      code: "runtime_error",
+      message: "failed to start hkv-server from /repo/target/debug/hkv-server: No such file or directory"
+    });
+    await expect(startServer({ address: "127.0.0.1", port: 6380 })).rejects.toThrow(
+      /no such file or directory/i
+    );
+  });
+
   it("aggregates shell snapshot data from existing server and run commands", async () => {
     const { invoke } = await import("@tauri-apps/api/core");
     const status: ServerStatus = {

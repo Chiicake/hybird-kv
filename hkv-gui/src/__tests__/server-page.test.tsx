@@ -94,14 +94,17 @@ describe("server page", () => {
   it("surfaces start failures through the existing last error UI", async () => {
     const api = await import("../lib/api");
 
-    vi.mocked(api.startServer).mockRejectedValue(new Error("binary unavailable"));
+    vi.mocked(api.startServer).mockRejectedValue(
+      new Error("failed to start hkv-server from /repo/target/debug/hkv-server: No such file or directory")
+    );
 
     render(<Server />);
 
     fireEvent.click(screen.getByRole("button", { name: /start local server/i }));
 
     await waitFor(() => {
-      expect(screen.getByText("binary unavailable")).toBeInTheDocument();
+      expect(screen.getByText(/no such file or directory/i)).toBeInTheDocument();
+      expect(screen.getByText(/run `cargo build -p hkv-server` first/i)).toBeInTheDocument();
       expect(screen.getByText("stopped")).toBeInTheDocument();
     });
   });

@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::sync::Arc;
 
 use crate::models::{BenchmarkResult, BenchmarkRunRequest};
@@ -45,9 +46,11 @@ pub fn select_runner(
     runners: &[Arc<dyn BenchmarkRunner>],
     runner_type: &str,
 ) -> Result<Arc<dyn BenchmarkRunner>, RunnerError> {
+    let normalized = normalize_runner_type(runner_type);
+
     runners
         .iter()
-        .find(|runner| runner.runner_type() == runner_type)
+        .find(|runner| runner.runner_type() == normalized)
         .cloned()
         .ok_or_else(|| {
             RunnerError::new(
@@ -55,6 +58,21 @@ pub fn select_runner(
                 format!("runner '{runner_type}' is not supported"),
             )
         })
+}
+
+fn normalize_runner_type(runner_type: &str) -> &str {
+    let file_name = Path::new(runner_type)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(runner_type);
+
+    if file_name.eq_ignore_ascii_case("redis-benchmark")
+        || file_name.eq_ignore_ascii_case("redis-benchmark.exe")
+    {
+        "redis-benchmark"
+    } else {
+        runner_type
+    }
 }
 
 #[cfg(test)]
@@ -112,6 +130,18 @@ mod tests {
     }
 
     #[test]
+    fn resolves_redis_runner_when_request_uses_an_explicit_binary_path() {
+        let runners: Vec<Arc<dyn BenchmarkRunner>> = vec![Arc::new(FakeRunner {
+            runner_type: "redis-benchmark",
+        })];
+
+        let selected = select_runner(&runners, "/usr/local/bin/redis-benchmark")
+            .expect("redis-benchmark path should resolve to redis adapter");
+
+        assert_eq!(selected.runner_type(), "redis-benchmark");
+    }
+
+    #[test]
     fn lifecycle_events_cover_started_running_completed_and_failed_states() {
         let completed = BenchmarkLifecycleEvent::Completed {
             result: BenchmarkResult {
@@ -126,14 +156,20 @@ mod tests {
             },
         };
 
-        assert!(matches!(BenchmarkLifecycleEvent::Started, BenchmarkLifecycleEvent::Started));
+        assert!(matches!(
+            BenchmarkLifecycleEvent::Started,
+            BenchmarkLifecycleEvent::Started
+        ));
         assert!(matches!(
             BenchmarkLifecycleEvent::Progress {
                 message: "running".into()
             },
             BenchmarkLifecycleEvent::Progress { .. }
         ));
-        assert!(matches!(completed, BenchmarkLifecycleEvent::Completed { .. }));
+        assert!(matches!(
+            completed,
+            BenchmarkLifecycleEvent::Completed { .. }
+        ));
         assert!(matches!(
             BenchmarkLifecycleEvent::Failed {
                 message: "boom".into()

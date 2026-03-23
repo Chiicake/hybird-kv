@@ -121,12 +121,30 @@ mod tests {
     use super::{
         command_names, register_commands, ApiError, APP_COMMAND_NAMES,
     };
+    use crate::benchmark_manager::BenchmarkManager;
     use crate::models::{
         BenchmarkEventEnvelope, ServerEventEnvelope, BENCHMARK_EVENT_CHANNEL,
         SERVER_EVENT_CHANNEL,
     };
     use crate::state::AppState;
+    use crate::run_repository::RunRepository;
+    use crate::runners::redis_benchmark::RedisBenchmarkRunner;
+    use crate::server_manager::ServerManager;
+    use crate::info_poller::InfoPoller;
     use serde_json::Value;
+    use std::fs;
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_storage_dir(test_name: &str) -> std::path::PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("hkv-commands-{test_name}-{unique}"));
+        fs::create_dir_all(&path).expect("temp dir should be created");
+        path
+    }
 
     fn contract_schema() -> Value {
         serde_json::from_str(include_str!("../../src/lib/contract-schema.json"))
@@ -151,7 +169,13 @@ mod tests {
 
     #[test]
     fn placeholder_responses_match_current_contract_shapes() {
-        let state = AppState::default();
+        let storage_dir = temp_storage_dir("placeholder-contract");
+        let state = AppState::with_components(
+            BenchmarkManager::new(vec![Arc::new(RedisBenchmarkRunner::new())]),
+            Arc::new(RunRepository::new(storage_dir.clone()).expect("repository should initialize")),
+            ServerManager::new(),
+            InfoPoller::new(),
+        );
         let benchmark_err = ApiError::not_implemented("benchmark orchestration is not implemented yet");
 
         assert_eq!(benchmark_err.code, "not_implemented");
@@ -166,6 +190,8 @@ mod tests {
 
         let info = state.info_snapshot();
         assert!(info.is_none());
+
+        fs::remove_dir_all(storage_dir).expect("temp dir should be removed");
     }
 
     #[test]

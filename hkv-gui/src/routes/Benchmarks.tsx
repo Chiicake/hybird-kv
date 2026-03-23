@@ -22,6 +22,30 @@ function mergeError(current: BenchmarkRun | null, message: string): BenchmarkRun
   return { ...current, errorMessage: message };
 }
 
+function formatBenchmarkStartError(message: string, targetAddr: string) {
+  const normalized = message.trim();
+
+  if (/connection refused/i.test(normalized)) {
+    return `${normalized}. Make sure a Redis-compatible server is running at ${targetAddr}. If you want to use the built-in GUI server, start it from the Server page first.`;
+  }
+
+  if (/binary_missing|failed to start redis-benchmark/i.test(normalized)) {
+    return `${normalized}. Install redis-benchmark or set a valid benchmark executable override in Settings.`;
+  }
+
+  return `${normalized}. Check that the target server is reachable at ${targetAddr}.`;
+}
+
+function formatBenchmarkStopError(message: string) {
+  const normalized = message.trim();
+
+  if (/run_not_active/i.test(normalized)) {
+    return "The benchmark run is no longer active. It may have already finished or failed.";
+  }
+
+  return normalized;
+}
+
 export function Benchmarks() {
   const [formValues, setFormValues] = useState(createBenchmarkFormDefaults);
   const [formErrors, setFormErrors] = useState<Partial<Record<keyof BenchmarkFormValues, string>>>({});
@@ -120,7 +144,11 @@ export function Benchmarks() {
       setActiveRun(startedRun);
       setConsoleEvents([]);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unable to start benchmark";
+      const rawMessage = error instanceof Error ? error.message : "Unable to start benchmark";
+      const message = formatBenchmarkStartError(
+        rawMessage,
+        `${formValues.host}:${formValues.port}`
+      );
       setActiveRun((current) =>
         current
           ? { ...current, errorMessage: message }
@@ -150,7 +178,8 @@ export function Benchmarks() {
       const stoppedRun = await stopBenchmark(activeRun.id);
       setActiveRun(stoppedRun);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unable to stop benchmark";
+      const rawMessage = error instanceof Error ? error.message : "Unable to stop benchmark";
+      const message = formatBenchmarkStopError(rawMessage);
       setActiveRun((current) => mergeError(current, message));
     } finally {
       setBusy(false);

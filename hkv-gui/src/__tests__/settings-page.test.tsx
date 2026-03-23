@@ -17,7 +17,9 @@ describe("settings page", () => {
       DEFAULT_RUNTIME_PREFERENCES.benchmarkBinaryPath
     );
     expect(screen.getByLabelText(/default benchmark target host/i)).toHaveValue("127.0.0.1");
-    expect(screen.getByLabelText(/default benchmark target port/i)).toHaveValue("6379");
+    expect(screen.getByLabelText(/default benchmark target port/i)).toHaveValue(
+      DEFAULT_RUNTIME_PREFERENCES.benchmarkTargetPort
+    );
     expect(screen.getByText(/nothing else is configurable in v1/i)).toBeInTheDocument();
   });
 

@@ -21,6 +21,17 @@ describe("benchmarks page", () => {
     window.localStorage.clear();
   });
 
+  it("defaults the benchmark target to the local GUI server port", async () => {
+    const api = await import("../lib/api");
+
+    vi.mocked(api.onBenchmarkEvent).mockResolvedValue(() => undefined);
+
+    render(<Benchmarks />);
+
+    expect(screen.getByLabelText(/target host/i)).toHaveValue("127.0.0.1");
+    expect(screen.getByLabelText(/target port/i)).toHaveValue("6380");
+  });
+
   it("prefills the benchmark target from saved runtime preferences", async () => {
     const api = await import("../lib/api");
 
@@ -299,7 +310,7 @@ describe("benchmarks page", () => {
     await waitFor(() => {
       expect(api.startBenchmark).toHaveBeenCalledWith({
         runner: "redis-benchmark",
-        targetAddr: "127.0.0.1:6379",
+        targetAddr: "127.0.0.1:6380",
         clients: 12,
         requests: 45000,
         dataSize: 128,
@@ -426,6 +437,71 @@ describe("benchmarks page", () => {
     });
 
     expect(screen.getByText(/detail reload failed/i)).toBeInTheDocument();
+  });
+
+  it("shows actionable guidance when benchmark start fails", async () => {
+    const api = await import("../lib/api");
+
+    vi.mocked(api.onBenchmarkEvent).mockResolvedValue(() => undefined);
+    vi.mocked(api.startBenchmark).mockRejectedValue(
+      new Error("failed to start redis-benchmark: connection refused")
+    );
+
+    render(<Benchmarks />);
+
+    fireEvent.click(screen.getByRole("button", { name: /start benchmark/i }));
+
+    await waitFor(() => {
+      expect(api.startBenchmark).toHaveBeenCalled();
+    });
+
+    expect(screen.getByText(/connection refused/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/make sure a redis-compatible server is running at 127.0.0.1:6380/i)
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/if you want to use the built-in gui server, start it from the server page first/i)
+    ).toBeInTheDocument();
+  });
+
+  it("shows actionable guidance when benchmark stop fails", async () => {
+    const api = await import("../lib/api");
+
+    vi.mocked(api.onBenchmarkEvent).mockResolvedValue(() => undefined);
+    vi.mocked(api.startBenchmark).mockResolvedValue({
+      id: "run-stop",
+      request: {
+        runner: "redis-benchmark",
+        targetAddr: "127.0.0.1:6380",
+        clients: 16,
+        requests: 100000,
+        dataSize: 128,
+        pipeline: 2
+      },
+      status: "running",
+      createdAt: "2026-03-23T15:00:00Z",
+      startedAt: "2026-03-23T15:00:01Z",
+      finishedAt: null,
+      result: null,
+      errorMessage: null
+    });
+    vi.mocked(api.stopBenchmark).mockRejectedValue(new Error("run_not_active"));
+
+    render(<Benchmarks />);
+
+    fireEvent.click(screen.getByRole("button", { name: /start benchmark/i }));
+
+    await waitFor(() => {
+      expect(api.startBenchmark).toHaveBeenCalled();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /stop benchmark/i }));
+
+    await waitFor(() => {
+      expect(api.stopBenchmark).toHaveBeenCalledWith("run-stop");
+    });
+
+    expect(screen.getByText(/the benchmark run is no longer active/i)).toBeInTheDocument();
   });
 
   it("queues a follow-up refresh when benchmark events arrive during an in-flight detail load", async () => {

@@ -1,5 +1,6 @@
 use crate::benchmark_manager::BenchmarkManager;
 use crate::info_poller::InfoPoller;
+use crate::models::BenchmarkEventEnvelope;
 use crate::models::{
     BenchmarkRun, BenchmarkRunRequest, InfoSnapshot, NormalizedRunSummary, ServerStatus,
     StartServerRequest,
@@ -8,6 +9,7 @@ use crate::run_repository::RunRepository;
 use crate::runners::redis_benchmark::RedisBenchmarkRunner;
 use crate::server_manager::ServerManager;
 use std::sync::Arc;
+use tokio::sync::broadcast;
 
 pub struct AppState {
     benchmark_manager: BenchmarkManager,
@@ -94,6 +96,10 @@ impl AppState {
         self.benchmark_manager
             .stop(run_id)
             .map_err(|error| error.message)
+    }
+
+    pub fn subscribe_benchmark_lifecycle(&self) -> broadcast::Receiver<BenchmarkEventEnvelope> {
+        self.benchmark_manager.subscribe_lifecycle()
     }
 
     pub fn start_server(
@@ -254,12 +260,22 @@ mod tests {
 
     #[test]
     fn app_state_provides_default_contract_handles() {
-        let state = AppState::default();
+        let storage_dir = temp_storage_dir("default-contract");
+        let state = AppState::with_components(
+            BenchmarkManager::new(vec![Arc::new(RedisBenchmarkRunner::new())]),
+            Arc::new(
+                RunRepository::new(storage_dir.clone()).expect("repository should initialize"),
+            ),
+            ServerManager::with_launcher(Box::new(FakeLauncher::running(1))),
+            InfoPoller::new(),
+        );
 
         assert!(state.list_runs().is_empty());
         assert_eq!(state.server_status().state, "stopped");
         assert_eq!(state.server_status().address, "127.0.0.1:6380");
         assert!(state.info_snapshot().is_none());
+
+        fs::remove_dir_all(storage_dir).expect("temp dir should be removed");
     }
 
     #[test]

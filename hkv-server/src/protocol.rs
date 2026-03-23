@@ -63,7 +63,8 @@ impl RespParser {
                         None => return Ok(None),
                     };
                     if line.first() != Some(&b'*') {
-                        return Err(RespError::Protocol);
+                        let args = parse_inline_command(&line)?;
+                        return Ok(Some(args));
                     }
                     let count = parse_usize(&line[1..])?;
                     self.args.clear();
@@ -134,6 +135,20 @@ fn parse_usize(data: &[u8]) -> Result<usize, RespError> {
     Ok(value)
 }
 
+fn parse_inline_command(data: &[u8]) -> Result<Vec<Vec<u8>>, RespError> {
+    let args: Vec<Vec<u8>> = data
+        .split(|byte| *byte == b' ')
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| segment.to_vec())
+        .collect();
+
+    if args.is_empty() {
+        return Err(RespError::Protocol);
+    }
+
+    Ok(args)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,5 +171,13 @@ mod tests {
         buf.extend_from_slice(b"G\r\n");
         let cmd = parser.parse(&mut buf).unwrap().unwrap();
         assert_eq!(cmd[0], b"PING");
+    }
+
+    #[test]
+    fn parses_inline_ping_command() {
+        let mut buf = BytesMut::from("PING\r\n");
+        let mut parser = RespParser::new();
+        let cmd = parser.parse(&mut buf).unwrap().unwrap();
+        assert_eq!(cmd, vec![b"PING".to_vec()]);
     }
 }
