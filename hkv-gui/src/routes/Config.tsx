@@ -5,8 +5,8 @@ export function Config() {
     <PlaceholderRoute
       eyebrow="Config / Schema lane"
       title="Config"
-      description="Editable configuration arrives once the schema and persistence flows are real."
-      dependency="Depends on validated config models and save workflows that are out of scope for this shell task."
+      description="Editable config is not real in v1 because there is no validated schema editor or save/apply workflow behind this route yet."
+      dependency="Depends on future backend schema models, validation errors from Tauri commands, and explicit load-save-apply flows."
     />
   );
 }

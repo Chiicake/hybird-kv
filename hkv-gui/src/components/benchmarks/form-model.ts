@@ -1,4 +1,5 @@
 import type { BenchmarkRunRequest } from "../../lib/types";
+import { loadRuntimePreferences, resolveBenchmarkBinaryPath } from "../../lib/runtime-preferences";
 
 export type BenchmarkFormValues = {
   host: string;
@@ -23,6 +24,16 @@ export const DEFAULT_BENCHMARK_FORM: BenchmarkFormValues = {
   dataSize: "128",
   pipeline: "4"
 };
+
+export function createBenchmarkFormDefaults(): BenchmarkFormValues {
+  const preferences = loadRuntimePreferences();
+
+  return {
+    ...DEFAULT_BENCHMARK_FORM,
+    host: preferences.benchmarkTargetHost,
+    port: preferences.benchmarkTargetPort
+  };
+}
 
 export function applyBenchmarkProfile(profile: string, values: BenchmarkFormValues) {
   switch (profile) {
@@ -77,7 +88,7 @@ export function buildBenchmarkRequest(values: BenchmarkFormValues): BenchmarkRun
       : Number(values.requests);
 
   return {
-    runner: "redis-benchmark",
+    runner: resolveBenchmarkBinaryPath(loadRuntimePreferences()),
     targetAddr: `${values.host}:${values.port}`,
     clients: Number(values.clients),
     requests: requestBudget,

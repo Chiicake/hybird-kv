@@ -47,7 +47,7 @@ describe("app shell", () => {
     ).toBeInTheDocument();
     expect(screen.getByText(/planned expansion/i)).toBeInTheDocument();
     expect(
-      screen.getByText(/depends on tauri command bindings and runtime services/i)
+      screen.getByText(/depends on a future tauri global-shortcut bridge/i)
     ).toBeInTheDocument();
   });
 

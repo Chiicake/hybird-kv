@@ -3,6 +3,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { BENCHMARK_EVENT_CHANNEL, type BenchmarkRun } from "../lib/types";
 import { Benchmarks } from "../routes/Benchmarks";
+import {
+  RUNTIME_PREFERENCES_STORAGE_KEY,
+  saveRuntimePreferences
+} from "../lib/runtime-preferences";
 
 vi.mock("../lib/api", () => ({
   getRunDetail: vi.fn(),
@@ -14,6 +18,24 @@ vi.mock("../lib/api", () => ({
 describe("benchmarks page", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.localStorage.clear();
+  });
+
+  it("prefills the benchmark target from saved runtime preferences", async () => {
+    const api = await import("../lib/api");
+
+    vi.mocked(api.onBenchmarkEvent).mockResolvedValue(() => undefined);
+    saveRuntimePreferences({
+      benchmarkBinaryPath: "~/bin/redis-benchmark",
+      benchmarkTargetHost: "192.168.1.44",
+      benchmarkTargetPort: "6390"
+    });
+
+    render(<Benchmarks />);
+
+    expect(screen.getByLabelText(/target host/i)).toHaveValue("192.168.1.44");
+    expect(screen.getByLabelText(/target port/i)).toHaveValue("6390");
+    expect(window.localStorage.getItem(RUNTIME_PREFERENCES_STORAGE_KEY)).toContain("redis-benchmark");
   });
 
   it("configures a run, shows live progress, and refreshes detail from lifecycle events", async () => {

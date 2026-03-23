@@ -18,6 +18,7 @@ export function PlaceholderRoute(props: PlaceholderRouteProps) {
         <p className="panel__label">Planned expansion</p>
         <h2>This route is intentionally a placeholder</h2>
         <p>{props.dependency}</p>
+        <p>This page stays honest in v1: no fake dashboard, no stub actions, no pretend backend state.</p>
       </article>
     </section>
   );

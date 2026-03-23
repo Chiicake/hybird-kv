@@ -7,7 +7,7 @@ import { RunConsole } from "../components/benchmarks/RunConsole";
 import {
   applyBenchmarkProfile,
   buildBenchmarkRequest,
-  DEFAULT_BENCHMARK_FORM,
+  createBenchmarkFormDefaults,
   type BenchmarkFormValues,
   validateBenchmarkForm
 } from "../components/benchmarks/form-model";
@@ -23,7 +23,7 @@ function mergeError(current: BenchmarkRun | null, message: string): BenchmarkRun
 }
 
 export function Benchmarks() {
-  const [formValues, setFormValues] = useState(DEFAULT_BENCHMARK_FORM);
+  const [formValues, setFormValues] = useState(createBenchmarkFormDefaults);
   const [formErrors, setFormErrors] = useState<Partial<Record<keyof BenchmarkFormValues, string>>>({});
   const [busy, setBusy] = useState(false);
   const [activeRun, setActiveRun] = useState<BenchmarkRun | null>(null);
