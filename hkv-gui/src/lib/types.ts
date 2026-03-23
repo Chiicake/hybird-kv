@@ -73,6 +73,8 @@ export type BenchmarkEventEnvelope = {
   event: string;
   runId: string;
   emittedAt: string;
+  message: string | null;
+  error: string | null;
 };
 
 export type ServerEventEnvelope = {

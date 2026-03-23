@@ -35,9 +35,8 @@ describe("app shell", () => {
     expect(
       screen.getByRole("heading", { name: "Benchmarks", level: 1 })
     ).toBeInTheDocument();
-    expect(
-      screen.getByText(/navigation is live; execution is intentionally absent/i)
-    ).toBeInTheDocument();
+    expect(screen.getByText(/run a focused workbench profile/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /start benchmark/i })).toBeInTheDocument();
   });
 
   it("keeps future pages honest about missing backend dependencies", () => {
