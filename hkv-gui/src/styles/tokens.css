@@ -1,0 +1,21 @@
+:root {
+  color-scheme: dark;
+  --bg: #07111a;
+  --bg-elevated: rgba(13, 29, 43, 0.94);
+  --bg-panel: rgba(9, 21, 31, 0.82);
+  --bg-panel-strong: rgba(6, 16, 24, 0.96);
+  --line: rgba(119, 170, 182, 0.2);
+  --line-strong: rgba(138, 227, 201, 0.28);
+  --text: #edf6f2;
+  --text-muted: #8ca7ac;
+  --accent: #8ae3c9;
+  --accent-strong: #d7ff72;
+  --alert: #ff8a65;
+  --shadow: 0 28px 80px rgba(0, 0, 0, 0.35);
+  --radius-xl: 28px;
+  --radius-lg: 20px;
+  --radius-md: 14px;
+  --content-width: 1180px;
+  --font-display: "Segoe UI", "Trebuchet MS", sans-serif;
+  --font-body: "Segoe UI", "Trebuchet MS", sans-serif;
+}

@@ -1,0 +1,64 @@
+{
+  "commands": [
+    "start_benchmark",
+    "stop_benchmark",
+    "list_runs",
+    "get_run_detail",
+    "start_server",
+    "stop_server",
+    "server_status",
+    "current_info_snapshot"
+  ],
+  "channels": {
+    "benchmark": "benchmark:lifecycle",
+    "server": "server:status"
+  },
+  "models": {
+    "benchmarkRunRequest": ["runner", "targetAddr", "clients", "requests", "dataSize", "pipeline"],
+    "benchmarkResult": [
+      "totalRequests",
+      "throughputOpsPerSec",
+      "averageLatencyMs",
+      "p50LatencyMs",
+      "p95LatencyMs",
+      "p99LatencyMs",
+      "durationMs",
+      "datasetBytes"
+    ],
+    "benchmarkRun": [
+      "id",
+      "request",
+      "status",
+      "createdAt",
+      "startedAt",
+      "finishedAt",
+      "result",
+      "errorMessage"
+    ],
+    "normalizedRunSummary": [
+      "id",
+      "runner",
+      "status",
+      "targetAddr",
+      "createdAt",
+      "finishedAt",
+      "throughputOpsPerSec",
+      "p95LatencyMs"
+    ],
+    "serverStatus": ["state", "address", "pid", "startedAt", "lastError"],
+    "infoSnapshot": [
+      "capturedAt",
+      "role",
+      "connectedClients",
+      "usedMemory",
+      "totalCommandsProcessed",
+      "instantaneousOpsPerSec",
+      "keyspaceHits",
+      "keyspaceMisses",
+      "uptimeSeconds"
+    ],
+    "startServerRequest": ["address", "port"],
+    "benchmarkEventEnvelope": ["channel", "event", "runId", "emittedAt", "message", "error"],
+    "serverEventEnvelope": ["channel", "event", "emittedAt", "status", "info"]
+  }
+}
