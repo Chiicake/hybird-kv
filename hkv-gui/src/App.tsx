@@ -1,7 +1,7 @@
 import { Navigate, type RouteObject } from "react-router-dom";
 
 import { AppShell } from "./components/layout/AppShell";
-import { primaryRouteChildren } from "./routes/config";
+import { primaryRouteChildren } from "./routes/route-config";
 import "./styles/index.css";
 
 export const routes: RouteObject[] = [

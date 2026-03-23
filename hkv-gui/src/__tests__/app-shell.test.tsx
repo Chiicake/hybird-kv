@@ -1,16 +1,11 @@
 import { render, screen } from "@testing-library/react";
-import { RouterProvider, createMemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 
-import { routes } from "../App";
-import { primaryNavItems } from "../routes/config";
+import { primaryNavItems } from "../routes/route-config";
+import { renderTestRouter } from "../test/router";
 
 function renderRoute(path: string) {
-  const router = createMemoryRouter(routes, {
-    initialEntries: [path]
-  });
-
-  render(<RouterProvider router={router} />);
+  render(renderTestRouter(path));
 }
 
 describe("app shell", () => {
@@ -64,7 +59,11 @@ describe("app shell", () => {
       screen.getByRole("heading", { name: "Server", level: 1 })
     ).toBeInTheDocument();
     expect(
-      screen.getByText(/no fake toggles before process management exists/i)
+      screen.getByRole("button", { name: /start local server/i })
     ).toBeInTheDocument();
+    expect(screen.getByText("Host")).toBeInTheDocument();
+    expect(screen.getByText("127.0.0.1")).toBeInTheDocument();
+    expect(screen.getByText("Port")).toBeInTheDocument();
+    expect(screen.getByText("6380")).toBeInTheDocument();
   });
 });

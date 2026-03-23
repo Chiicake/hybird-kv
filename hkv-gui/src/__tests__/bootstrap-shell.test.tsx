@@ -1,16 +1,11 @@
 import { render, screen } from "@testing-library/react";
-import { RouterProvider, createMemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 
-import { routes } from "../App";
+import { renderTestRouter } from "../test/router";
 
 describe("bootstrap shell", () => {
   it("renders the persistent shell chrome around routed content", () => {
-    const router = createMemoryRouter(routes, {
-      initialEntries: ["/"]
-    });
-
-    render(<RouterProvider router={router} />);
+    render(renderTestRouter("/"));
 
     expect(
       screen.getByRole("heading", { name: "HybridKV Workbench" })

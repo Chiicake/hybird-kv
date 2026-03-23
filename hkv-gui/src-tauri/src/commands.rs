@@ -31,6 +31,13 @@ impl ApiError {
             message: message.into(),
         }
     }
+
+    fn runtime(message: impl Into<String>) -> Self {
+        Self {
+            code: "runtime_error".into(),
+            message: message.into(),
+        }
+    }
 }
 
 pub fn command_names() -> &'static [&'static str; 8] {
@@ -95,21 +102,15 @@ pub async fn get_run_detail(
 
 #[tauri::command]
 pub async fn start_server(
-    _state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, AppState>,
     request: Option<StartServerRequest>,
 ) -> Result<ServerStatus, ApiError> {
-    let _ = request;
-
-    Err(ApiError::not_implemented(
-        "server lifecycle management is not implemented yet",
-    ))
+    state.start_server(request).map_err(ApiError::runtime)
 }
 
 #[tauri::command]
-pub async fn stop_server(_state: tauri::State<'_, AppState>) -> Result<ServerStatus, ApiError> {
-    Err(ApiError::not_implemented(
-        "server lifecycle management is not implemented yet",
-    ))
+pub async fn stop_server(state: tauri::State<'_, AppState>) -> Result<ServerStatus, ApiError> {
+    state.stop_server().map_err(ApiError::runtime)
 }
 
 #[tauri::command]
@@ -162,7 +163,6 @@ mod tests {
         let state = AppState::default();
         let benchmark_err = ApiError::not_implemented("benchmark orchestration is not implemented yet");
         let run_detail_err = ApiError::not_implemented("run detail persistence is not implemented yet");
-        let server_err = ApiError::not_implemented("server lifecycle management is not implemented yet");
 
         assert_eq!(benchmark_err.code, "not_implemented");
         assert_eq!(benchmark_err.message, "benchmark orchestration is not implemented yet");
@@ -171,7 +171,6 @@ mod tests {
         assert!(list.is_empty());
 
         assert_eq!(run_detail_err.code, "not_implemented");
-        assert_eq!(server_err.code, "not_implemented");
 
         let status = state.server_status();
         assert_eq!(status.state, "stopped");
