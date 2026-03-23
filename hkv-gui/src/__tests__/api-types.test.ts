@@ -53,7 +53,9 @@ describe("gui api contracts", () => {
       channel: BENCHMARK_EVENT_CHANNEL,
       event: "queued",
       runId: "run-001",
-      emittedAt: "2026-03-22T10:00:01Z"
+      emittedAt: "2026-03-22T10:00:01Z",
+      message: null,
+      error: null
     };
 
     expect(request.targetAddr).toBe("127.0.0.1:6379");

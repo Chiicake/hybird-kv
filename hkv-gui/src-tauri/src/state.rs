@@ -4,20 +4,27 @@ use crate::models::{
     BenchmarkRun, BenchmarkRunRequest, InfoSnapshot, NormalizedRunSummary, ServerStatus,
     StartServerRequest,
 };
+use crate::run_repository::RunRepository;
 use crate::runners::redis_benchmark::RedisBenchmarkRunner;
 use crate::server_manager::ServerManager;
 use std::sync::Arc;
 
 pub struct AppState {
     benchmark_manager: BenchmarkManager,
+    run_repository: Arc<RunRepository>,
     server_manager: ServerManager,
     info_poller: InfoPoller,
 }
 
 impl Default for AppState {
     fn default() -> Self {
+        let run_repository = Arc::new(default_run_repository());
         Self {
-            benchmark_manager: BenchmarkManager::new(vec![Arc::new(RedisBenchmarkRunner::new())]),
+            benchmark_manager: BenchmarkManager::with_sink(
+                vec![Arc::new(RedisBenchmarkRunner::new())],
+                run_repository.clone(),
+            ),
+            run_repository,
             server_manager: ServerManager::new(),
             info_poller: InfoPoller::new(),
         }
@@ -26,15 +33,54 @@ impl Default for AppState {
 
 impl AppState {
     pub(crate) fn with_parts(server_manager: ServerManager, info_poller: InfoPoller) -> Self {
+        let run_repository = Arc::new(default_run_repository());
         Self {
-            benchmark_manager: BenchmarkManager::new(vec![Arc::new(RedisBenchmarkRunner::new())]),
+            benchmark_manager: BenchmarkManager::with_sink(
+                vec![Arc::new(RedisBenchmarkRunner::new())],
+                run_repository.clone(),
+            ),
+            run_repository,
+            server_manager,
+            info_poller,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_components(
+        benchmark_manager: BenchmarkManager,
+        run_repository: Arc<RunRepository>,
+        server_manager: ServerManager,
+        info_poller: InfoPoller,
+    ) -> Self {
+        Self {
+            benchmark_manager,
+            run_repository,
             server_manager,
             info_poller,
         }
     }
 
     pub fn list_runs(&self) -> Vec<NormalizedRunSummary> {
-        self.benchmark_manager.list_runs()
+        let mut runs = self.run_repository.list_runs().unwrap_or_default();
+        for run in self.benchmark_manager.list_runs() {
+            if let Some(existing) = runs.iter_mut().find(|existing| existing.id == run.id) {
+                *existing = run;
+            } else {
+                runs.push(run);
+            }
+        }
+        runs.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+        runs
+    }
+
+    pub fn get_run_detail(&self, run_id: &str) -> Result<BenchmarkRun, String> {
+        if let Some(run) = self.benchmark_manager.get_run(run_id) {
+            return Ok(run);
+        }
+
+        self.run_repository
+            .get_run(run_id)?
+            .ok_or_else(|| format!("benchmark run '{run_id}' was not found"))
     }
 
     pub fn start_benchmark(&self, request: BenchmarkRunRequest) -> Result<BenchmarkRun, String> {
@@ -83,13 +129,44 @@ impl AppState {
     }
 }
 
+fn default_run_repository() -> RunRepository {
+    let storage_root = preferred_state_root().join("hybird-kv-gui").join("runs");
+    RunRepository::new(storage_root).expect("run repository should initialize")
+}
+
+fn preferred_state_root() -> std::path::PathBuf {
+    if let Ok(path) = std::env::var("XDG_STATE_HOME") {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() {
+            return std::path::PathBuf::from(trimmed);
+        }
+    }
+
+    if let Ok(home) = std::env::var("HOME") {
+        let trimmed = home.trim();
+        if !trimmed.is_empty() {
+            return std::path::PathBuf::from(trimmed)
+                .join(".local")
+                .join("state");
+        }
+    }
+
+    std::env::temp_dir()
+}
+
 #[cfg(test)]
 mod tests {
     use super::AppState;
+    use crate::benchmark_manager::BenchmarkManager;
     use crate::info_poller::{InfoClient, InfoClientFactory, InfoPoller};
+    use crate::models::{BenchmarkRunRequest, NormalizedRunSummary};
+    use crate::run_repository::RunRepository;
+    use crate::runners::redis_benchmark::RedisBenchmarkRunner;
     use crate::server_manager::{LaunchSpec, ManagedChild, ProcessLauncher, ServerManager};
     use std::collections::VecDeque;
+    use std::fs;
     use std::sync::{Arc, Mutex};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[derive(Clone)]
     struct FakeLauncher {
@@ -164,6 +241,16 @@ mod tests {
         }
     }
 
+    fn temp_storage_dir(test_name: &str) -> std::path::PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("hkv-app-state-{test_name}-{unique}"));
+        fs::create_dir_all(&path).expect("temp dir should be created");
+        path
+    }
+
     #[test]
     fn app_state_provides_default_contract_handles() {
         let state = AppState::default();
@@ -185,5 +272,61 @@ mod tests {
 
         assert!(state.info_snapshot().is_none());
         assert_eq!(state.server_status().last_error, Some("poll failed".into()));
+    }
+
+    #[test]
+    fn app_state_merges_persisted_and_active_run_summaries() {
+        let storage_dir = temp_storage_dir("merge-runs");
+        let repository = Arc::new(
+            RunRepository::new(storage_dir.clone()).expect("repository should initialize"),
+        );
+        let benchmark_manager = BenchmarkManager::new(vec![Arc::new(RedisBenchmarkRunner::new())]);
+        repository
+            .store_runs_for_test(&[crate::models::BenchmarkRun {
+                id: "persisted-001".into(),
+                request: BenchmarkRunRequest {
+                    runner: "redis-benchmark".into(),
+                    target_addr: "127.0.0.1:6379".into(),
+                    clients: 8,
+                    requests: 1000,
+                    data_size: 64,
+                    pipeline: 1,
+                },
+                status: "completed".into(),
+                created_at: "2026-03-23T12:00:00Z".into(),
+                started_at: Some("2026-03-23T12:00:01Z".into()),
+                finished_at: Some("2026-03-23T12:00:02Z".into()),
+                result: None,
+                error_message: None,
+            }])
+            .expect("seed runs should persist");
+
+        let state = AppState::with_components(
+            benchmark_manager,
+            Arc::clone(&repository),
+            ServerManager::with_launcher(Box::new(FakeLauncher::running(1))),
+            InfoPoller::new(),
+        );
+
+        state
+            .benchmark_manager
+            .seed_run_for_test(NormalizedRunSummary {
+                id: "active-001".into(),
+                runner: "redis-benchmark".into(),
+                status: "running".into(),
+                target_addr: "127.0.0.1:6379".into(),
+                created_at: "2026-03-23T12:00:03Z".into(),
+                finished_at: None,
+                throughput_ops_per_sec: None,
+                p95_latency_ms: None,
+            });
+
+        let merged = state.list_runs();
+
+        assert_eq!(merged.len(), 2);
+        assert!(merged.iter().any(|run| run.id == "persisted-001"));
+        assert!(merged.iter().any(|run| run.id == "active-001"));
+
+        fs::remove_dir_all(storage_dir).expect("temp dir should be removed");
     }
 }

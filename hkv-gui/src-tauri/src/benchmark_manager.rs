@@ -144,6 +144,33 @@ impl BenchmarkManager {
         state.runs.iter().map(normalize_run).collect()
     }
 
+    pub fn get_run(&self, run_id: &str) -> Option<BenchmarkRun> {
+        let state = self.state.lock().expect("benchmark manager mutex poisoned");
+        state.runs.iter().find(|run| run.id == run_id).cloned()
+    }
+
+    #[cfg(test)]
+    pub fn seed_run_for_test(&self, summary: NormalizedRunSummary) {
+        let mut state = self.state.lock().expect("benchmark manager mutex poisoned");
+        state.runs.push(BenchmarkRun {
+            id: summary.id,
+            request: BenchmarkRunRequest {
+                runner: summary.runner,
+                target_addr: summary.target_addr,
+                clients: 1,
+                requests: 1,
+                data_size: 1,
+                pipeline: 1,
+            },
+            status: summary.status,
+            created_at: summary.created_at,
+            started_at: None,
+            finished_at: summary.finished_at,
+            result: None,
+            error_message: None,
+        });
+    }
+
     fn spawn_event_worker(
         &self,
         run_id: String,

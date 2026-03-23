@@ -82,14 +82,10 @@ pub async fn list_runs(state: tauri::State<'_, AppState>) -> Result<Vec<Normaliz
 
 #[tauri::command]
 pub async fn get_run_detail(
-    _state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, AppState>,
     run_id: String,
 ) -> Result<BenchmarkRun, ApiError> {
-    let _ = run_id;
-
-    Err(ApiError::not_implemented(
-        "run detail persistence is not implemented yet",
-    ))
+    state.get_run_detail(&run_id).map_err(ApiError::runtime)
 }
 
 #[tauri::command]
@@ -154,15 +150,12 @@ mod tests {
     fn placeholder_responses_match_current_contract_shapes() {
         let state = AppState::default();
         let benchmark_err = ApiError::not_implemented("benchmark orchestration is not implemented yet");
-        let run_detail_err = ApiError::not_implemented("run detail persistence is not implemented yet");
 
         assert_eq!(benchmark_err.code, "not_implemented");
         assert_eq!(benchmark_err.message, "benchmark orchestration is not implemented yet");
 
         let list = state.list_runs();
         assert!(list.is_empty());
-
-        assert_eq!(run_detail_err.code, "not_implemented");
 
         let status = state.server_status();
         assert_eq!(status.state, "stopped");
