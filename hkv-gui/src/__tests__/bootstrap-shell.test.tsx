@@ -11,7 +11,7 @@ describe("bootstrap shell", () => {
       screen.getByRole("heading", { name: "HybridKV Workbench" })
     ).toBeInTheDocument();
     expect(
-      screen.getByText(/shell online \/ backend pending/i)
+      screen.getByText(/loading local server and benchmark state/i)
     ).toBeInTheDocument();
     expect(
       screen.getByRole("main", { name: "Workbench content" })

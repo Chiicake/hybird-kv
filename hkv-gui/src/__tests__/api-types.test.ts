@@ -7,6 +7,7 @@ import {
   currentInfoSnapshot,
   getRunDetail,
   listRuns,
+  loadWorkbenchSnapshot,
   onBenchmarkEvent,
   onServerEvent,
   serverStatus,
@@ -226,5 +227,65 @@ describe("gui api contracts", () => {
     expect(invoke).toHaveBeenNthCalledWith(2, "stop_server", undefined);
     expect(invoke).toHaveBeenNthCalledWith(3, "server_status", undefined);
     expect(invoke).toHaveBeenNthCalledWith(4, "current_info_snapshot", undefined);
+  });
+
+  it("aggregates shell snapshot data from existing server and run commands", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const status: ServerStatus = {
+      state: "running",
+      address: "127.0.0.1:6380",
+      pid: 4242,
+      startedAt: "2026-03-22T10:00:59Z",
+      lastError: null
+    };
+    const summaries: NormalizedRunSummary[] = [
+      {
+        id: "run-002",
+        runner: "redis-benchmark",
+        status: "completed",
+        targetAddr: "127.0.0.1:6380",
+        createdAt: "2026-03-22T10:02:00Z",
+        finishedAt: "2026-03-22T10:02:04Z",
+        throughputOpsPerSec: 160000,
+        p95LatencyMs: 1.5
+      },
+      {
+        id: "run-001",
+        runner: "redis-benchmark",
+        status: "completed",
+        targetAddr: "127.0.0.1:6380",
+        createdAt: "2026-03-22T10:00:00Z",
+        finishedAt: "2026-03-22T10:00:04Z",
+        throughputOpsPerSec: 130000,
+        p95LatencyMs: 2.2
+      }
+    ];
+    const snapshot: InfoSnapshot = {
+      capturedAt: "2026-03-22T10:02:05Z",
+      role: "master",
+      connectedClients: 3,
+      usedMemory: 4096,
+      totalCommandsProcessed: 90,
+      instantaneousOpsPerSec: 45,
+      keyspaceHits: 11,
+      keyspaceMisses: 2,
+      uptimeSeconds: 120
+    };
+
+    vi.mocked(invoke)
+      .mockResolvedValueOnce(status)
+      .mockResolvedValueOnce(summaries)
+      .mockResolvedValueOnce(snapshot);
+
+    const workbenchSnapshot = await loadWorkbenchSnapshot();
+
+    expect(workbenchSnapshot.status).toEqual(status);
+    expect(workbenchSnapshot.info).toEqual(snapshot);
+    expect(workbenchSnapshot.latestRun).toEqual(summaries[0]);
+    expect(workbenchSnapshot.previousRun).toEqual(summaries[1]);
+    expect(workbenchSnapshot.recentRuns).toEqual(summaries);
+    expect(invoke).toHaveBeenNthCalledWith(1, "server_status", undefined);
+    expect(invoke).toHaveBeenNthCalledWith(2, "list_runs", undefined);
+    expect(invoke).toHaveBeenNthCalledWith(3, "current_info_snapshot", undefined);
   });
 });

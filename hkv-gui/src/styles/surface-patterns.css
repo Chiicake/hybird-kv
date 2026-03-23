@@ -32,7 +32,8 @@
 }
 
 .page__lede,
-.panel p {
+.panel p,
+.metric-card p {
   margin: 0;
   color: var(--text-muted);
   line-height: 1.6;
