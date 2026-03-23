@@ -6,6 +6,7 @@ use crate::models::{
 };
 use crate::state::AppState;
 
+#[cfg(test)]
 pub const APP_COMMAND_NAMES: &[&str; 8] = &[
     "start_benchmark",
     "stop_benchmark",
@@ -25,6 +26,7 @@ pub struct ApiError {
 }
 
 impl ApiError {
+    #[cfg(test)]
     fn not_implemented(message: &str) -> Self {
         Self {
             code: "not_implemented".into(),
@@ -40,6 +42,7 @@ impl ApiError {
     }
 }
 
+#[cfg(test)]
 pub fn command_names() -> &'static [&'static str; 8] {
     APP_COMMAND_NAMES
 }

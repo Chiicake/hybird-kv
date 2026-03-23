@@ -32,6 +32,7 @@ impl Default for AppState {
 }
 
 impl AppState {
+    #[cfg(test)]
     pub(crate) fn with_parts(server_manager: ServerManager, info_poller: InfoPoller) -> Self {
         let run_repository = Arc::new(default_run_repository());
         Self {

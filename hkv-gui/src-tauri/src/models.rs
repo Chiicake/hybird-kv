@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 pub const BENCHMARK_EVENT_CHANNEL: &str = "benchmark:lifecycle";
+#[cfg(test)]
 pub const SERVER_EVENT_CHANNEL: &str = "server:status";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -115,6 +116,7 @@ pub struct BenchmarkEventEnvelope {
     pub error: Option<String>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerEventEnvelope {

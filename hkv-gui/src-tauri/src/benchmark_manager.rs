@@ -17,8 +17,10 @@ pub trait BenchmarkRunSink: Send + Sync {
     fn persist(&self, run: &BenchmarkRun) -> Result<(), String>;
 }
 
+#[cfg(test)]
 pub struct NullBenchmarkRunSink;
 
+#[cfg(test)]
 impl BenchmarkRunSink for NullBenchmarkRunSink {
     fn persist(&self, _run: &BenchmarkRun) -> Result<(), String> {
         Ok(())
@@ -44,6 +46,7 @@ struct ActiveRun {
 }
 
 impl BenchmarkManager {
+    #[cfg(test)]
     pub fn new(runners: Vec<Arc<dyn BenchmarkRunner>>) -> Self {
         Self::with_sink(runners, Arc::new(NullBenchmarkRunSink))
     }
@@ -66,10 +69,12 @@ impl BenchmarkManager {
         }
     }
 
+    #[allow(dead_code)]
     pub fn subscribe(&self) -> broadcast::Receiver<BenchmarkRun> {
         self.run_events.subscribe()
     }
 
+    #[allow(dead_code)]
     pub fn subscribe_lifecycle(&self) -> broadcast::Receiver<BenchmarkEventEnvelope> {
         self.lifecycle_events.subscribe()
     }
