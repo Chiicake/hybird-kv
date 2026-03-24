@@ -284,7 +284,7 @@ impl KVClient {
 
             match conn.exec(args) {
                 Ok(response) => return Ok(response),
-                Err(ExecError::Retryable(err)) if attempts < self.max_retries => {
+                Err(ExecError::Retryable(_)) if attempts < self.max_retries => {
                     attempts += 1;
                 }
                 Err(err) => return Err(err.into_client_error()),
