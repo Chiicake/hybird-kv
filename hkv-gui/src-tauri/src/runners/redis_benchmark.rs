@@ -432,6 +432,7 @@ mod tests {
         stdout: Option<Box<dyn std::io::Read + Send>>,
         stderr: Option<Box<dyn std::io::Read + Send>>,
         killed: Arc<AtomicBool>,
+        wait_for_kill: bool,
     }
 
     impl BenchmarkProcess for FakeProcess {
@@ -441,6 +442,15 @@ mod tests {
         }
 
         fn wait(&mut self) -> std::io::Result<i32> {
+            if self.wait_for_kill {
+                let started = std::time::Instant::now();
+                while !self.killed.load(Ordering::SeqCst) {
+                    if started.elapsed() > std::time::Duration::from_secs(1) {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            }
             Ok(self.exit_code)
         }
 
@@ -599,6 +609,7 @@ mod tests {
             ))),
             stderr: Some(Box::new(Cursor::new(b"WARNING: warmup\n".to_vec()))),
             killed: Arc::new(AtomicBool::new(false)),
+            wait_for_kill: false,
         }));
         let runner = RedisBenchmarkRunner::with_spawner(spawner);
         let (sender, receiver) = mpsc::channel();
@@ -629,6 +640,7 @@ mod tests {
             ))),
             stderr: Some(Box::new(Cursor::new(Vec::<u8>::new()))),
             killed,
+            wait_for_kill: false,
         }));
         let runner = RedisBenchmarkRunner::with_spawner(spawner);
         let (sender, receiver) = mpsc::channel();
@@ -680,6 +692,7 @@ mod tests {
             stdout: Some(Box::new(Cursor::new(Vec::<u8>::new()))),
             stderr: Some(Box::new(Cursor::new(b"connection refused".to_vec()))),
             killed: Arc::new(AtomicBool::new(false)),
+            wait_for_kill: false,
         }));
         let runner = RedisBenchmarkRunner::with_spawner(spawner);
         let (sender, receiver) = mpsc::channel();
@@ -708,6 +721,7 @@ mod tests {
             stdout: Some(Box::new(Cursor::new(Vec::<u8>::new()))),
             stderr: Some(Box::new(Cursor::new(Vec::<u8>::new()))),
             killed: Arc::clone(&killed),
+            wait_for_kill: true,
         }));
         let runner = RedisBenchmarkRunner::with_spawner(spawner);
         let (sender, receiver) = mpsc::channel();
@@ -733,6 +747,7 @@ mod tests {
             stdout: Some(Box::new(Cursor::new(b"nonsense".to_vec()))),
             stderr: Some(Box::new(Cursor::new(b"broken pipe".to_vec()))),
             killed: Arc::new(AtomicBool::new(false)),
+            wait_for_kill: false,
         }));
         let runner = RedisBenchmarkRunner::with_spawner(spawner);
         let (sender, receiver) = mpsc::channel();
