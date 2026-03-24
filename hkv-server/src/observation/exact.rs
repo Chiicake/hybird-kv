@@ -5,6 +5,7 @@ use super::{AccessClass, ExperimentObservationSink, ObservationEvent};
 
 /// Exact count snapshot for experiment-only ground truth.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[allow(dead_code)]
 pub struct ExactCounterSnapshot {
     pub total_events: u64,
     pub reads: u64,
@@ -14,11 +15,13 @@ pub struct ExactCounterSnapshot {
 
 /// Exact experiment-only counter for observed events.
 #[derive(Debug, Default)]
+#[allow(dead_code)]
 pub struct ExactObservationCounter {
     snapshot: Cell<ExactCounterSnapshot>,
 }
 
 impl ExactObservationCounter {
+    #[allow(dead_code)]
     pub fn snapshot(&self) -> ExactCounterSnapshot {
         self.snapshot.get()
     }
@@ -46,11 +49,13 @@ impl ExperimentObservationSink for ExactObservationCounter {
 /// This is intentionally a simple in-memory log, not the Phase 2B recorder
 /// abstraction.
 #[derive(Debug, Default)]
+#[allow(dead_code)]
 pub struct ExactObservationLog {
     events: RefCell<Vec<ObservationEvent>>,
 }
 
 impl ExactObservationLog {
+    #[allow(dead_code)]
     pub fn events(&self) -> Vec<ObservationEvent> {
         self.events.borrow().clone()
     }

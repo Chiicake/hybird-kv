@@ -79,7 +79,9 @@ pub async fn stop_benchmark(
 }
 
 #[tauri::command]
-pub async fn list_runs(state: tauri::State<'_, AppState>) -> Result<Vec<NormalizedRunSummary>, ApiError> {
+pub async fn list_runs(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<NormalizedRunSummary>, ApiError> {
     Ok(state.list_runs())
 }
 
@@ -118,19 +120,16 @@ pub async fn current_info_snapshot(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        command_names, register_commands, ApiError, APP_COMMAND_NAMES,
-    };
+    use super::{command_names, register_commands, ApiError, APP_COMMAND_NAMES};
     use crate::benchmark_manager::BenchmarkManager;
+    use crate::info_poller::InfoPoller;
     use crate::models::{
-        BenchmarkEventEnvelope, ServerEventEnvelope, BENCHMARK_EVENT_CHANNEL,
-        SERVER_EVENT_CHANNEL,
+        BenchmarkEventEnvelope, ServerEventEnvelope, BENCHMARK_EVENT_CHANNEL, SERVER_EVENT_CHANNEL,
     };
-    use crate::state::AppState;
     use crate::run_repository::RunRepository;
     use crate::runners::redis_benchmark::RedisBenchmarkRunner;
     use crate::server_manager::ServerManager;
-    use crate::info_poller::InfoPoller;
+    use crate::state::AppState;
     use serde_json::Value;
     use std::fs;
     use std::sync::Arc;
@@ -172,14 +171,20 @@ mod tests {
         let storage_dir = temp_storage_dir("placeholder-contract");
         let state = AppState::with_components(
             BenchmarkManager::new(vec![Arc::new(RedisBenchmarkRunner::new())]),
-            Arc::new(RunRepository::new(storage_dir.clone()).expect("repository should initialize")),
+            Arc::new(
+                RunRepository::new(storage_dir.clone()).expect("repository should initialize"),
+            ),
             ServerManager::new(),
             InfoPoller::new(),
         );
-        let benchmark_err = ApiError::not_implemented("benchmark orchestration is not implemented yet");
+        let benchmark_err =
+            ApiError::not_implemented("benchmark orchestration is not implemented yet");
 
         assert_eq!(benchmark_err.code, "not_implemented");
-        assert_eq!(benchmark_err.message, "benchmark orchestration is not implemented yet");
+        assert_eq!(
+            benchmark_err.message,
+            "benchmark orchestration is not implemented yet"
+        );
 
         let list = state.list_runs();
         assert!(list.is_empty());
@@ -213,7 +218,8 @@ mod tests {
             info: None,
         };
 
-        let benchmark_json = serde_json::to_value(&benchmark_event).expect("event should serialize");
+        let benchmark_json =
+            serde_json::to_value(&benchmark_event).expect("event should serialize");
         let server_json = serde_json::to_value(&server_event).expect("event should serialize");
 
         assert_eq!(benchmark_json["channel"], BENCHMARK_EVENT_CHANNEL);

@@ -12,8 +12,8 @@ use hkv_server::server;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
-async fn spawn_test_server(
-) -> std::io::Result<(SocketAddr, Arc<SharedObservationLog>, oneshot::Sender<()>)> {
+async fn spawn_test_server()
+-> std::io::Result<(SocketAddr, Arc<SharedObservationLog>, oneshot::Sender<()>)> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
 
@@ -137,12 +137,14 @@ struct OverheadComparison {
     runtime_delta_pct: f64,
 }
 
-async fn run_overhead_workload(addr: SocketAddr, config: OverheadWorkloadConfig) -> OverheadRunMetrics {
+async fn run_overhead_workload(
+    addr: SocketAddr,
+    config: OverheadWorkloadConfig,
+) -> OverheadRunMetrics {
     let started = Instant::now();
     let mut tasks = Vec::with_capacity(config.workers);
 
     for worker in 0..config.workers {
-        let addr = addr;
         tasks.push(tokio::task::spawn_blocking(move || {
             let client = KVClient::connect(addr.to_string()).unwrap();
             let worker_started = Instant::now();
@@ -151,9 +153,19 @@ async fn run_overhead_workload(addr: SocketAddr, config: OverheadWorkloadConfig)
                 let key = format!("overhead:{worker}:{round}");
                 let value = format!("value:{worker}:{round}");
                 client.set(key.as_bytes(), value.as_bytes()).unwrap();
-                assert_eq!(client.get(key.as_bytes()).unwrap(), Some(value.into_bytes()));
-                assert!(client.expire(key.as_bytes(), Duration::from_secs(30)).unwrap());
-                assert!(matches!(client.ttl(key.as_bytes()).unwrap(), ClientTtl::ExpiresIn(_)));
+                assert_eq!(
+                    client.get(key.as_bytes()).unwrap(),
+                    Some(value.into_bytes())
+                );
+                assert!(
+                    client
+                        .expire(key.as_bytes(), Duration::from_secs(30))
+                        .unwrap()
+                );
+                assert!(matches!(
+                    client.ttl(key.as_bytes()).unwrap(),
+                    ClientTtl::ExpiresIn(_)
+                ));
                 assert!(client.delete(key.as_bytes()).unwrap());
                 assert_eq!(client.get(key.as_bytes()).unwrap(), None);
             }
@@ -189,7 +201,10 @@ async fn run_overhead_workload(addr: SocketAddr, config: OverheadWorkloadConfig)
     }
 }
 
-async fn run_overhead_series(addr: SocketAddr, config: OverheadWorkflowConfig) -> Vec<OverheadRunMetrics> {
+async fn run_overhead_series(
+    addr: SocketAddr,
+    config: OverheadWorkflowConfig,
+) -> Vec<OverheadRunMetrics> {
     for _ in 0..config.warmup_runs {
         let _ = run_overhead_workload(addr, config.workload).await;
     }
@@ -206,19 +221,22 @@ fn summarize_runs(runs: &[OverheadRunMetrics]) -> OverheadRunSummary {
 
     let total_ops = runs[0].total_ops;
     let measured_runs = runs.len();
-    let elapsed_secs = runs.iter().map(|run| run.elapsed.as_secs_f64()).sum::<f64>() / measured_runs as f64;
-    let avg_ops_per_sec = runs.iter().map(|run| run.ops_per_sec).sum::<f64>() / measured_runs as f64;
-    let avg_ns_per_op = runs.iter().map(|run| run.avg_ns_per_op).sum::<f64>() / measured_runs as f64;
+    let elapsed_secs = runs
+        .iter()
+        .map(|run| run.elapsed.as_secs_f64())
+        .sum::<f64>()
+        / measured_runs as f64;
+    let avg_ops_per_sec =
+        runs.iter().map(|run| run.ops_per_sec).sum::<f64>() / measured_runs as f64;
+    let avg_ns_per_op =
+        runs.iter().map(|run| run.avg_ns_per_op).sum::<f64>() / measured_runs as f64;
     let avg_max_worker_secs = runs
         .iter()
         .map(|run| run.max_worker_elapsed.as_secs_f64())
         .sum::<f64>()
         / measured_runs as f64;
-    let avg_worker_skew_ratio = runs
-        .iter()
-        .map(|run| run.worker_skew_ratio)
-        .sum::<f64>()
-        / measured_runs as f64;
+    let avg_worker_skew_ratio =
+        runs.iter().map(|run| run.worker_skew_ratio).sum::<f64>() / measured_runs as f64;
 
     OverheadRunSummary {
         total_ops,
@@ -258,7 +276,10 @@ async fn request_path_records_observation_events() {
     client.set(b"obs:set", b"value").unwrap();
     assert_eq!(client.get(b"obs:set").unwrap(), Some(b"value".to_vec()));
     assert!(client.expire(b"obs:set", Duration::from_secs(10)).unwrap());
-    assert!(matches!(client.ttl(b"obs:set").unwrap(), ClientTtl::ExpiresIn(_)));
+    assert!(matches!(
+        client.ttl(b"obs:set").unwrap(),
+        ClientTtl::ExpiresIn(_)
+    ));
     client.delete(b"obs:set").unwrap();
 
     let unknown = send_raw(addr, b"*1\r\n$7\r\nUNKNOWN\r\n").unwrap();
@@ -296,7 +317,12 @@ async fn request_path_records_observation_events() {
     assert_eq!(events[4].value_size, None);
 
     for event in &events {
-        assert!(event.timestamp.duration_since(std::time::UNIX_EPOCH).is_ok());
+        assert!(
+            event
+                .timestamp
+                .duration_since(std::time::UNIX_EPOCH)
+                .is_ok()
+        );
     }
 
     let _ = shutdown.send(());
@@ -307,16 +333,18 @@ async fn invalid_and_failed_commands_do_not_record_misleading_observation_events
     let (addr, observation_log, shutdown) = spawn_test_server().await.unwrap();
 
     let wrong_arity_get = send_raw(addr, b"*1\r\n$3\r\nGET\r\n").unwrap();
-    assert_eq!(wrong_arity_get, b"-ERR wrong number of arguments for GET\r\n");
+    assert_eq!(
+        wrong_arity_get,
+        b"-ERR wrong number of arguments for GET\r\n"
+    );
 
     let wrong_arity_ttl = send_raw(addr, b"*1\r\n$3\r\nTTL\r\n").unwrap();
-    assert_eq!(wrong_arity_ttl, b"-ERR wrong number of arguments for TTL\r\n");
+    assert_eq!(
+        wrong_arity_ttl,
+        b"-ERR wrong number of arguments for TTL\r\n"
+    );
 
-    let invalid_expire = send_raw(
-        addr,
-        b"*3\r\n$6\r\nEXPIRE\r\n$3\r\nkey\r\n$1\r\nx\r\n",
-    )
-    .unwrap();
+    let invalid_expire = send_raw(addr, b"*3\r\n$6\r\nEXPIRE\r\n$3\r\nkey\r\n$1\r\nx\r\n").unwrap();
     assert_eq!(invalid_expire, b"-ERR invalid integer\r\n");
 
     let invalid_set = send_raw(
@@ -358,9 +386,17 @@ async fn overhead_workflow_reports_baseline_and_observed_server_runs() {
         warmup_events: config.total_ops_per_run() * config.warmup_runs,
         measured_events: config.total_ops_per_run() * config.measured_runs,
     };
-    let event_storage_estimate_bytes = observed_events.len() * size_of::<hkv_server::phase2a_testing::ObservationEvent>();
+    let event_storage_estimate_bytes =
+        observed_events.len() * size_of::<hkv_server::phase2a_testing::ObservationEvent>();
 
-    println!("OVERHEAD_WORKFLOW workload workers={} rounds_per_worker={} warmup_runs={} measured_runs={} total_ops_per_run={}", config.workload.workers, config.workload.rounds_per_worker, config.warmup_runs, config.measured_runs, baseline.total_ops);
+    println!(
+        "OVERHEAD_WORKFLOW workload workers={} rounds_per_worker={} warmup_runs={} measured_runs={} total_ops_per_run={}",
+        config.workload.workers,
+        config.workload.rounds_per_worker,
+        config.warmup_runs,
+        config.measured_runs,
+        baseline.total_ops
+    );
     println!(
         "OVERHEAD_WORKFLOW baseline avg_elapsed_ms={:.3} avg_ns_per_op={:.1} avg_ops_per_sec={:.1} avg_max_worker_ms={:.3} avg_worker_skew_ratio={:.3} measured_runs={}",
         baseline.avg_elapsed.as_secs_f64() * 1_000.0,
@@ -384,9 +420,7 @@ async fn overhead_workflow_reports_baseline_and_observed_server_runs() {
     );
     println!(
         "OVERHEAD_WORKFLOW comparison latency_delta_pct={:.2} runtime_delta_pct={:.2} throughput_delta_pct={:.2}",
-        comparison.latency_delta_pct,
-        comparison.runtime_delta_pct,
-        comparison.throughput_delta_pct,
+        comparison.latency_delta_pct, comparison.runtime_delta_pct, comparison.throughput_delta_pct,
     );
 
     assert_eq!(baseline_runs.len(), config.measured_runs);
@@ -401,12 +435,30 @@ async fn overhead_workflow_reports_baseline_and_observed_server_runs() {
     assert!(observed.avg_ns_per_op.is_finite() && observed.avg_ns_per_op > 0.0);
     assert!(baseline.avg_worker_skew_ratio.is_finite() && baseline.avg_worker_skew_ratio >= 1.0);
     assert!(observed.avg_worker_skew_ratio.is_finite() && observed.avg_worker_skew_ratio >= 1.0);
-    assert_eq!(observation_counts.warmup_events, observed.total_ops * config.warmup_runs);
-    assert_eq!(observation_counts.measured_events, observed.total_ops * config.measured_runs);
-    assert_eq!(observed_events.len(), observation_counts.warmup_events + observation_counts.measured_events);
-    assert_eq!(event_storage_estimate_bytes, observed_events.len() * size_of::<hkv_server::phase2a_testing::ObservationEvent>());
-    assert_eq!(observed_events.first().map(|event| event.command), Some(CommandKind::Set));
-    assert_eq!(observed_events.last().map(|event| event.command), Some(CommandKind::Get));
+    assert_eq!(
+        observation_counts.warmup_events,
+        observed.total_ops * config.warmup_runs
+    );
+    assert_eq!(
+        observation_counts.measured_events,
+        observed.total_ops * config.measured_runs
+    );
+    assert_eq!(
+        observed_events.len(),
+        observation_counts.warmup_events + observation_counts.measured_events
+    );
+    assert_eq!(
+        event_storage_estimate_bytes,
+        observed_events.len() * size_of::<hkv_server::phase2a_testing::ObservationEvent>()
+    );
+    assert_eq!(
+        observed_events.first().map(|event| event.command),
+        Some(CommandKind::Set)
+    );
+    assert_eq!(
+        observed_events.last().map(|event| event.command),
+        Some(CommandKind::Get)
+    );
     assert!(comparison.latency_delta_pct.is_finite());
     assert!(comparison.runtime_delta_pct.is_finite());
     assert!(comparison.throughput_delta_pct.is_finite());

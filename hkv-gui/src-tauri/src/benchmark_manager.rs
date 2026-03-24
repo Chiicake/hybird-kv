@@ -376,6 +376,7 @@ mod tests {
         scenario: FakeScenario,
     }
 
+    #[derive(Clone, Copy)]
     enum FakeScenario {
         Complete,
         Fail,
@@ -394,12 +395,7 @@ mod tests {
             events: Sender<BenchmarkLifecycleEvent>,
         ) -> Result<Box<dyn ActiveBenchmark>, RunnerError> {
             let stopped = Arc::clone(&self.stopped);
-            let scenario = match self.scenario {
-                FakeScenario::Complete => FakeScenario::Complete,
-                FakeScenario::Fail => FakeScenario::Fail,
-                FakeScenario::WaitForCancel => FakeScenario::WaitForCancel,
-                FakeScenario::ProgressOnly => FakeScenario::ProgressOnly,
-            };
+            let scenario = self.scenario;
 
             thread::spawn(move || {
                 let _ = events.send(BenchmarkLifecycleEvent::Started);

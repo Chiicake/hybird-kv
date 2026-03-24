@@ -16,7 +16,9 @@ use tokio::task::JoinSet;
 use hkv_engine::{KVEngine, TtlStatus};
 
 use crate::metrics::Metrics;
-use crate::observation::{CommandKind, ExperimentObservationSink, ObservationEvent, SharedObservationLog};
+use crate::observation::{
+    CommandKind, ExperimentObservationSink, ObservationEvent, SharedObservationLog,
+};
 use crate::protocol::{RespError, RespParser};
 
 const DEFAULT_SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -94,6 +96,7 @@ where
     handle_connection_with_metrics(stream, engine, Arc::new(Metrics::new())).await
 }
 
+#[allow(dead_code)]
 async fn serve_with_shutdown_config<E, F>(
     listener: tokio::net::TcpListener,
     engine: Arc<E>,
@@ -353,7 +356,7 @@ fn handle_expire(args: &[Vec<u8>], engine: &impl KVEngine) -> Vec<u8> {
 
     match engine.expire(&args[1], Duration::from_secs(seconds)) {
         Ok(()) => resp_integer(1),
-        Err(err) if err == hkv_common::HkvError::NotFound => resp_integer(0),
+        Err(hkv_common::HkvError::NotFound) => resp_integer(0),
         Err(_) => resp_error("engine error"),
     }
 }
@@ -460,11 +463,9 @@ where
     F: FnOnce() -> Vec<u8>,
 {
     let response = dispatch();
-    if !is_error_response(&response) {
-        if let Some(sink) = sink {
-            for event in events {
-                sink.record_observation(event);
-            }
+    if !is_error_response(&response) && let Some(sink) = sink {
+        for event in events {
+            sink.record_observation(event);
         }
     }
     response
@@ -545,7 +546,9 @@ fn planned_observations(args: &[Vec<u8>]) -> Vec<ObservationEvent> {
     Vec::new()
 }
 
-fn observation_log_sink(log: Option<&SharedObservationLog>) -> Option<&dyn ExperimentObservationSink> {
+fn observation_log_sink(
+    log: Option<&SharedObservationLog>,
+) -> Option<&dyn ExperimentObservationSink> {
     log.map(|log| log as &dyn ExperimentObservationSink)
 }
 
@@ -582,10 +585,8 @@ fn finish_tracked_request(
 }
 
 fn reap_connection_task(join_result: Result<std::io::Result<()>, tokio::task::JoinError>) {
-    if let Err(join_error) = join_result {
-        if join_error.is_panic() {
-            std::panic::resume_unwind(join_error.into_panic());
-        }
+    if let Err(join_error) = join_result && join_error.is_panic() {
+        std::panic::resume_unwind(join_error.into_panic());
     }
 }
 
@@ -677,9 +678,7 @@ fn with_keepalive_retries(keepalive: TcpKeepalive, _: u32) -> TcpKeepalive {
 
 fn eq_ignore_ascii_case(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len()
-        && a.iter()
-            .zip(b)
-            .all(|(x, y)| x.to_ascii_lowercase() == y.to_ascii_lowercase())
+        && a.iter().zip(b).all(|(x, y)| x.eq_ignore_ascii_case(y))
 }
 
 fn parse_u64(arg: &[u8]) -> Result<u64, Vec<u8>> {
@@ -688,7 +687,7 @@ fn parse_u64(arg: &[u8]) -> Result<u64, Vec<u8>> {
     }
     let mut value: u64 = 0;
     for &b in arg {
-        if b < b'0' || b > b'9' {
+        if !b.is_ascii_digit() {
             return Err(resp_error("invalid integer"));
         }
         value = value.saturating_mul(10).saturating_add((b - b'0') as u64);

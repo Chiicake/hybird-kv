@@ -126,10 +126,7 @@ impl AppState {
     pub fn info_snapshot(&self) -> Option<InfoSnapshot> {
         let status = self.server_manager.status();
         if status.state == "running" {
-            match self.info_poller.poll(&status.address) {
-                Ok(snapshot) => Some(snapshot),
-                Err(_) => None,
-            }
+            self.info_poller.poll(&status.address).ok()
         } else {
             self.info_poller.snapshot()
         }

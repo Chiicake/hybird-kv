@@ -145,8 +145,10 @@ pub struct KVClient {
 impl KVClient {
     /// Creates a client with default configuration.
     pub fn connect(addr: impl Into<String>) -> ClientResult<Self> {
-        let mut config = ClientConfig::default();
-        config.addr = addr.into();
+        let config = ClientConfig {
+            addr: addr.into(),
+            ..ClientConfig::default()
+        };
         Self::with_config(config)
     }
 
@@ -230,8 +232,8 @@ impl KVClient {
     /// Converts Redis TTL conventions (-2 missing, -1 no expiry) into `ClientTtl`.
     pub fn ttl(&self, key: &[u8]) -> ClientResult<ClientTtl> {
         match self.exec_with_retry(&[b"TTL", key])? {
-            RespValue::Integer(value) if value == -2 => Ok(ClientTtl::Missing),
-            RespValue::Integer(value) if value == -1 => Ok(ClientTtl::NoExpiry),
+            RespValue::Integer(-2) => Ok(ClientTtl::Missing),
+            RespValue::Integer(-1) => Ok(ClientTtl::NoExpiry),
             RespValue::Integer(value) if value >= 0 => {
                 Ok(ClientTtl::ExpiresIn(Duration::from_secs(value as u64)))
             }

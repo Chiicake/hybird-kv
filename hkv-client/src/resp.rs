@@ -145,14 +145,18 @@ fn parse_i64(data: &[u8]) -> ClientResult<i64> {
     let mut value: i64 = 0;
     while idx < data.len() {
         let b = data[idx];
-        if b < b'0' || b > b'9' {
+        if !b.is_ascii_digit() {
             return Err(ClientError::Protocol);
         }
         value = value.saturating_mul(10).saturating_add((b - b'0') as i64);
         idx += 1;
     }
 
-    if negative { Ok(-value) } else { Ok(value) }
+    if negative {
+        Ok(-value)
+    } else {
+        Ok(value)
+    }
 }
 
 fn push_usize(out: &mut Vec<u8>, mut value: usize) {

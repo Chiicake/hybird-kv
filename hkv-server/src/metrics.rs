@@ -127,6 +127,12 @@ impl Metrics {
     }
 }
 
+impl Default for Metrics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MetricsSnapshot {
     /// Returns the average queries per second since the metrics instance started.
     pub fn qps(&self) -> f64 {

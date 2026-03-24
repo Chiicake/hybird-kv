@@ -11,9 +11,13 @@ out/
 .idea/codeStyles/
 .idea/runConfigurations/
 .marscode
+.worktrees/
+docs/
 memo/
 CLAUDE.md
 AGENTS.md
+hkv-gui/dump.rdb
+hkv-gui/src/__tests__/font-tokens.test.ts
 
 target/
 # Cargo.lock

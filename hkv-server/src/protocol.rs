@@ -108,6 +108,12 @@ impl RespParser {
     }
 }
 
+impl Default for RespParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 fn read_line(buf: &mut BytesMut) -> Option<BytesMut> {
     let mut idx = 1;
     while idx < buf.len() {
@@ -127,7 +133,7 @@ fn parse_usize(data: &[u8]) -> Result<usize, RespError> {
     }
     let mut value: usize = 0;
     for &b in data {
-        if b < b'0' || b > b'9' {
+        if !b.is_ascii_digit() {
             return Err(RespError::Protocol);
         }
         value = value.saturating_mul(10).saturating_add((b - b'0') as usize);

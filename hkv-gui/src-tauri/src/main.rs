@@ -1,8 +1,8 @@
 use tauri::Emitter;
 use tauri::Manager;
 
-mod commands;
 mod benchmark_manager;
+mod commands;
 mod info_poller;
 mod models;
 mod run_repository;

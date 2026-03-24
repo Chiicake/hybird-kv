@@ -88,7 +88,7 @@ fn parse_usize(data: &[u8]) -> std::io::Result<usize> {
     }
     let mut value = 0usize;
     for &b in data {
-        if b < b'0' || b > b'9' {
+        if !b.is_ascii_digit() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "digit",

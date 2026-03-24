@@ -267,8 +267,7 @@ fn assert_top_keys_in_current_evaluator_order(
         .collect();
 
     assert_eq!(
-        actual,
-        expected,
+        actual, expected,
         "ordering follows current evaluator semantics: total accesses, then read/write split, then key bytes"
     );
 }

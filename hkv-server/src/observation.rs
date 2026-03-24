@@ -87,8 +87,8 @@ mod tests {
     use std::time::{Duration, UNIX_EPOCH};
 
     use super::{
-        exact::{ExactCounterSnapshot, ExactObservationCounter, ExactObservationLog},
         AccessClass, CommandKind, ExperimentObservationSink, ObservationEvent,
+        exact::{ExactCounterSnapshot, ExactObservationCounter, ExactObservationLog},
     };
 
     #[test]

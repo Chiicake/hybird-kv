@@ -103,7 +103,7 @@ pub const STATUS_OK: u16 = 0;
 pub const MAX_BATCH_SIZE: usize = 1000;
 
 /// Result bitmap size for batch responses (1 bit per entry).
-pub const BATCH_RESULT_BYTES: usize = (MAX_BATCH_SIZE + 7) / 8;
+pub const BATCH_RESULT_BYTES: usize = MAX_BATCH_SIZE.div_ceil(8);
 
 /// Common header prepended to ioctl request/response payloads.
 ///
@@ -440,6 +440,12 @@ impl StatsRequest {
     }
 }
 
+impl Default for StatsRequest {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Stats response payload with a snapshot of cache telemetry.
 ///
 /// Uses `STATUS_OK` on success or an `HkvError::code()` value on failure.
@@ -523,6 +529,12 @@ impl FlushRequest {
         FlushRequest {
             header: IoctlHeader::new(IoctlCommand::Flush),
         }
+    }
+}
+
+impl Default for FlushRequest {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
