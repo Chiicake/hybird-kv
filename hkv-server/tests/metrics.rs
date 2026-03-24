@@ -74,7 +74,7 @@ async fn info_reports_request_error_and_latency_metrics() {
 async fn protocol_errors_are_counted_in_metrics() {
     let (addr, shutdown) = spawn_test_server().await.unwrap();
 
-    let response = send_raw(addr, b"broken\r\n").unwrap();
+    let response = send_raw(addr, b"*1\r\nnot-a-bulk-len\r\n").unwrap();
     assert_eq!(response, b"-ERR protocol error\r\n");
 
     let client = KVClient::connect(addr.to_string()).unwrap();
