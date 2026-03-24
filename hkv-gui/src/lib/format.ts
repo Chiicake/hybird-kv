@@ -62,3 +62,11 @@ export function formatBytes(value: number | null | undefined): string {
 
   return `${formatDecimal(size, 1)} ${units[unitIndex]}`;
 }
+
+export function formatTerminalLineCount(value: number | null | undefined): string {
+  if (value === null || value === undefined) {
+    return "-";
+  }
+
+  return `${formatInteger(value)} terminal ${value === 1 ? "line" : "lines"} captured`;
+}

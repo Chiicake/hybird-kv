@@ -5,7 +5,7 @@
 
 use std::future::Future;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use bytes::BytesMut;
 use socket2::{SockRef, TcpKeepalive};
@@ -16,6 +16,7 @@ use tokio::task::JoinSet;
 use hkv_engine::{KVEngine, TtlStatus};
 
 use crate::metrics::Metrics;
+use crate::observation::{CommandKind, ExperimentObservationSink, ObservationEvent, SharedObservationLog};
 use crate::protocol::{RespError, RespParser};
 
 const DEFAULT_SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -52,7 +53,37 @@ where
     E: KVEngine + 'static,
     F: Future<Output = ()>,
 {
-    serve_with_shutdown_config(listener, engine, metrics, shutdown, DEFAULT_SERVER_CONFIG).await
+    serve_with_shutdown_with_observation(
+        listener,
+        engine,
+        metrics,
+        None,
+        shutdown,
+        DEFAULT_SERVER_CONFIG,
+    )
+    .await
+}
+
+pub async fn serve_with_shutdown_and_observation<E, F>(
+    listener: tokio::net::TcpListener,
+    engine: Arc<E>,
+    metrics: Arc<Metrics>,
+    observation_log: Arc<SharedObservationLog>,
+    shutdown: F,
+) -> std::io::Result<()>
+where
+    E: KVEngine + 'static,
+    F: Future<Output = ()>,
+{
+    serve_with_shutdown_with_observation(
+        listener,
+        engine,
+        metrics,
+        Some(observation_log),
+        shutdown,
+        DEFAULT_SERVER_CONFIG,
+    )
+    .await
 }
 
 /// Handles a single TCP client connection.
@@ -67,6 +98,21 @@ async fn serve_with_shutdown_config<E, F>(
     listener: tokio::net::TcpListener,
     engine: Arc<E>,
     metrics: Arc<Metrics>,
+    shutdown: F,
+    config: ServerConfig,
+) -> std::io::Result<()>
+where
+    E: KVEngine + 'static,
+    F: Future<Output = ()>,
+{
+    serve_with_shutdown_with_observation(listener, engine, metrics, None, shutdown, config).await
+}
+
+async fn serve_with_shutdown_with_observation<E, F>(
+    listener: tokio::net::TcpListener,
+    engine: Arc<E>,
+    metrics: Arc<Metrics>,
+    observation_log: Option<Arc<SharedObservationLog>>,
     shutdown: F,
     config: ServerConfig,
 ) -> std::io::Result<()>
@@ -89,8 +135,9 @@ where
                 configure_accepted_stream(&stream, config)?;
                 let engine = Arc::clone(&engine);
                 let metrics = Arc::clone(&metrics);
+                let observation_log = observation_log.as_ref().map(Arc::clone);
                 connections.spawn(async move {
-                    handle_connection_with_metrics(stream, engine, metrics).await
+                    handle_connection_with_observation(stream, engine, metrics, observation_log).await
                 });
             }
         }
@@ -126,6 +173,18 @@ pub async fn handle_connection_with_metrics<E>(
 where
     E: KVEngine,
 {
+    handle_connection_with_observation(stream, engine, metrics, None).await
+}
+
+pub async fn handle_connection_with_observation<E>(
+    stream: TcpStream,
+    engine: Arc<E>,
+    metrics: Arc<Metrics>,
+    observation_log: Option<Arc<SharedObservationLog>>,
+) -> std::io::Result<()>
+where
+    E: KVEngine,
+{
     let mut stream = stream;
     let mut buffer = BytesMut::with_capacity(8 * 1024);
     let mut parser = RespParser::new();
@@ -141,7 +200,12 @@ where
                 Ok(Some(args)) => {
                     metrics.record_request_start();
                     let started_at = Instant::now();
-                    let response = dispatch_command(&args, engine.as_ref(), metrics.as_ref());
+                    let response = dispatch_command(
+                        &args,
+                        engine.as_ref(),
+                        metrics.as_ref(),
+                        observation_log_sink(observation_log.as_deref()),
+                    );
                     let write_result = stream.write_all(&response).await;
                     finish_tracked_request(metrics.as_ref(), started_at, &response, write_result)?;
                 }
@@ -161,7 +225,12 @@ where
     Ok(())
 }
 
-fn dispatch_command(args: &[Vec<u8>], engine: &impl KVEngine, metrics: &Metrics) -> Vec<u8> {
+fn dispatch_command(
+    args: &[Vec<u8>],
+    engine: &impl KVEngine,
+    metrics: &Metrics,
+    observation_sink: Option<&dyn ExperimentObservationSink>,
+) -> Vec<u8> {
     if args.is_empty() {
         return resp_error("empty command");
     }
@@ -171,19 +240,29 @@ fn dispatch_command(args: &[Vec<u8>], engine: &impl KVEngine, metrics: &Metrics)
         return handle_ping(args);
     }
     if eq_ignore_ascii_case(cmd, b"GET") {
-        return handle_get(args, engine);
+        return observe_command_result(observation_sink, planned_observations(args), || {
+            handle_get(args, engine)
+        });
     }
     if eq_ignore_ascii_case(cmd, b"SET") {
-        return handle_set(args, engine);
+        return observe_command_result(observation_sink, planned_observations(args), || {
+            handle_set(args, engine)
+        });
     }
     if eq_ignore_ascii_case(cmd, b"DEL") {
-        return handle_del(args, engine);
+        return observe_command_result(observation_sink, planned_observations(args), || {
+            handle_del(args, engine)
+        });
     }
     if eq_ignore_ascii_case(cmd, b"EXPIRE") {
-        return handle_expire(args, engine);
+        return observe_command_result(observation_sink, planned_observations(args), || {
+            handle_expire(args, engine)
+        });
     }
     if eq_ignore_ascii_case(cmd, b"TTL") {
-        return handle_ttl(args, engine);
+        return observe_command_result(observation_sink, planned_observations(args), || {
+            handle_ttl(args, engine)
+        });
     }
     if eq_ignore_ascii_case(cmd, b"INFO") {
         return handle_info(metrics);
@@ -372,6 +451,104 @@ fn resp_null() -> Vec<u8> {
     b"$-1\r\n".to_vec()
 }
 
+fn observe_command_result<F>(
+    sink: Option<&dyn ExperimentObservationSink>,
+    events: Vec<ObservationEvent>,
+    dispatch: F,
+) -> Vec<u8>
+where
+    F: FnOnce() -> Vec<u8>,
+{
+    let response = dispatch();
+    if !is_error_response(&response) {
+        if let Some(sink) = sink {
+            for event in events {
+                sink.record_observation(event);
+            }
+        }
+    }
+    response
+}
+
+fn planned_observations(args: &[Vec<u8>]) -> Vec<ObservationEvent> {
+    if args.is_empty() {
+        return Vec::new();
+    }
+
+    let command = &args[0];
+    if eq_ignore_ascii_case(command, b"GET") {
+        return match args {
+            [_, key] => vec![ObservationEvent::read(
+                CommandKind::Get,
+                key.clone(),
+                SystemTime::now(),
+            )],
+            _ => Vec::new(),
+        };
+    }
+
+    if eq_ignore_ascii_case(command, b"SET") {
+        return match args {
+            [_, key, value] => vec![ObservationEvent::write(
+                CommandKind::Set,
+                key.clone(),
+                Some(value.len()),
+                SystemTime::now(),
+            )],
+            [_, key, value, ex, _] if eq_ignore_ascii_case(ex, b"EX") => {
+                vec![ObservationEvent::write(
+                    CommandKind::Set,
+                    key.clone(),
+                    Some(value.len()),
+                    SystemTime::now(),
+                )]
+            }
+            _ => Vec::new(),
+        };
+    }
+
+    if eq_ignore_ascii_case(command, b"DEL") {
+        if args.len() < 2 {
+            return Vec::new();
+        }
+        return args[1..]
+            .iter()
+            .map(|key| {
+                ObservationEvent::write(CommandKind::Delete, key.clone(), None, SystemTime::now())
+            })
+            .collect();
+    }
+
+    if eq_ignore_ascii_case(command, b"EXPIRE") {
+        return match args {
+            [_, key, _] => vec![ObservationEvent::write(
+                CommandKind::Expire,
+                key.clone(),
+                None,
+                SystemTime::now(),
+            )],
+            _ => Vec::new(),
+        };
+    }
+
+    if eq_ignore_ascii_case(command, b"TTL") {
+        return match args {
+            [_, key] => vec![ObservationEvent::read(
+                CommandKind::Ttl,
+                key.clone(),
+                SystemTime::now(),
+            )],
+            _ => Vec::new(),
+        };
+    }
+
+    Vec::new()
+}
+
+fn observation_log_sink(log: Option<&SharedObservationLog>) -> Option<&dyn ExperimentObservationSink> {
+    log.map(|log| log as &dyn ExperimentObservationSink)
+}
+
 fn is_error_response(response: &[u8]) -> bool {
     response.first() == Some(&b'-')
 }
@@ -547,11 +724,19 @@ mod tests {
     #[derive(Default)]
     struct FakeEngine {
         ops: Mutex<Vec<FakeOp>>,
+        fail_writes: bool,
     }
 
     impl FakeEngine {
         fn recorded_ops(&self) -> Vec<FakeOp> {
             self.ops.lock().unwrap().clone()
+        }
+
+        fn failing_writes() -> Self {
+            Self {
+                ops: Mutex::new(Vec::new()),
+                fail_writes: true,
+            }
         }
     }
 
@@ -563,6 +748,9 @@ mod tests {
 
         fn set(&self, key: Vec<u8>, value: Vec<u8>) -> HkvResult<()> {
             self.ops.lock().unwrap().push(FakeOp::Set(key, value));
+            if self.fail_writes {
+                return Err(hkv_common::HkvError::InternalError);
+            }
             Ok(())
         }
 
@@ -571,11 +759,17 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(FakeOp::SetWithTtl(key, value, ttl));
+            if self.fail_writes {
+                return Err(hkv_common::HkvError::InternalError);
+            }
             Ok(())
         }
 
         fn delete(&self, key: &[u8]) -> HkvResult<bool> {
             self.ops.lock().unwrap().push(FakeOp::Delete(key.to_vec()));
+            if self.fail_writes {
+                return Err(hkv_common::HkvError::InternalError);
+            }
             Ok(false)
         }
 
@@ -584,6 +778,9 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(FakeOp::Expire(key.to_vec(), ttl));
+            if self.fail_writes {
+                return Err(hkv_common::HkvError::InternalError);
+            }
             Ok(())
         }
 
@@ -763,6 +960,7 @@ mod tests {
             ],
             &engine,
             &metrics,
+            None,
         );
 
         assert_eq!(response, b"+OK\r\n");
@@ -785,6 +983,7 @@ mod tests {
             &[b"SET".to_vec(), b"key".to_vec(), b"value".to_vec()],
             &engine,
             &metrics,
+            None,
         );
 
         assert_eq!(response, b"+OK\r\n");
@@ -792,5 +991,30 @@ mod tests {
             engine.recorded_ops(),
             vec![FakeOp::Set(b"key".to_vec(), b"value".to_vec())]
         );
+    }
+
+    #[test]
+    fn planned_observations_skip_wrong_arity_commands() {
+        assert!(planned_observations(&[b"GET".to_vec()]).is_empty());
+        assert!(planned_observations(&[b"TTL".to_vec()]).is_empty());
+        assert!(planned_observations(&[b"DEL".to_vec()]).is_empty());
+        assert!(planned_observations(&[b"EXPIRE".to_vec(), b"key".to_vec()]).is_empty());
+    }
+
+    #[test]
+    fn dispatch_command_skips_observation_on_engine_error() {
+        let engine = FakeEngine::failing_writes();
+        let metrics = Metrics::new();
+        let observation_log = SharedObservationLog::default();
+
+        let response = dispatch_command(
+            &[b"SET".to_vec(), b"key".to_vec(), b"value".to_vec()],
+            &engine,
+            &metrics,
+            Some(&observation_log),
+        );
+
+        assert_eq!(response, b"-ERR engine error\r\n");
+        assert!(observation_log.observations().is_empty());
     }
 }

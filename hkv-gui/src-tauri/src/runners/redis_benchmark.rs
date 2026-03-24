@@ -645,7 +645,9 @@ mod tests {
             recv_event(&receiver),
             BenchmarkLifecycleEvent::Progress { .. }
         ));
-        match recv_event(&receiver) {
+        match recv_event_matching(&receiver, |event| {
+            matches!(event, BenchmarkLifecycleEvent::Completed { .. })
+        }) {
             BenchmarkLifecycleEvent::Completed { result } => {
                 assert_eq!(result.total_requests, 100000);
                 assert_eq!(result.p95_latency_ms, 0.880);
@@ -687,8 +689,9 @@ mod tests {
             .expect("runner should start");
 
         let _ = recv_event(&receiver);
-        let _ = recv_event(&receiver);
-        match recv_event(&receiver) {
+        match recv_event_matching(&receiver, |event| {
+            matches!(event, BenchmarkLifecycleEvent::Failed { .. })
+        }) {
             BenchmarkLifecycleEvent::Failed { message } => {
                 assert!(message.contains("exited early"));
                 assert!(message.contains("connection refused"));
@@ -739,13 +742,29 @@ mod tests {
             .expect("runner should start");
 
         let _ = recv_event(&receiver);
-        let _ = recv_event(&receiver);
-        match recv_event(&receiver) {
+        match recv_event_matching(&receiver, |event| {
+            matches!(event, BenchmarkLifecycleEvent::Failed { .. })
+        }) {
             BenchmarkLifecycleEvent::Failed { message } => {
                 assert!(message.contains("failed to parse redis-benchmark output"));
                 assert!(message.contains("broken pipe"));
             }
             other => panic!("expected failed event, got {other:?}"),
+        }
+    }
+
+    fn recv_event_matching<F>(
+        receiver: &mpsc::Receiver<BenchmarkLifecycleEvent>,
+        predicate: F,
+    ) -> BenchmarkLifecycleEvent
+    where
+        F: Fn(&BenchmarkLifecycleEvent) -> bool,
+    {
+        loop {
+            let event = recv_event(receiver);
+            if predicate(&event) {
+                return event;
+            }
         }
     }
 }

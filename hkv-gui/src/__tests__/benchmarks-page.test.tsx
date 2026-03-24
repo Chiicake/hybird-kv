@@ -229,6 +229,13 @@ describe("benchmarks page", () => {
     expect(screen.getAllByText("2.4 ms").length).toBeGreaterThan(0);
     expect(screen.getByText("11 s")).toBeInTheDocument();
     expect(screen.getByText("146.5 MiB")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /phase 2a capture/i })).toBeInTheDocument();
+    expect(screen.getByText("redis-benchmark 48c x 300k requests")).toBeInTheDocument();
+    expect(
+      screen.getByText(/300k requests, 48 clients, 512 b payload, pipeline 8/i)
+    ).toBeInTheDocument();
+    expect(screen.getByText(/2 terminal lines captured/i)).toBeInTheDocument();
+    expect(screen.getByRole("log", { name: /benchmark console/i })).toBeInTheDocument();
     expect(screen.getByRole("img", { name: /throughput trend/i })).toBeInTheDocument();
     expect(screen.getByRole("img", { name: /latency distribution/i })).toBeInTheDocument();
 

@@ -12,7 +12,34 @@ import {
   validateBenchmarkForm
 } from "../components/benchmarks/form-model";
 import { getRunDetail, onBenchmarkEvent, startBenchmark, stopBenchmark } from "../lib/api";
+import { formatTerminalLineCount } from "../lib/format";
 import type { BenchmarkEventEnvelope, BenchmarkRun } from "../lib/types";
+
+function formatRequestBudget(value: number) {
+  if (value >= 1_000_000) {
+    return `${Math.round(value / 1_000_000)}M requests`;
+  }
+
+  if (value >= 1_000) {
+    return `${Math.round(value / 1_000)}k requests`;
+  }
+
+  return `${value} requests`;
+}
+
+function buildPhase2aHelper(run: BenchmarkRun | null, terminalLineCount: number) {
+  if (!run?.result) {
+    return null;
+  }
+
+  const { request } = run;
+
+  return {
+    comparisonLabel: `${request.runner} ${request.clients}c x ${formatRequestBudget(request.requests)}`,
+    workloadSummary: `${formatRequestBudget(request.requests)}, ${request.clients} clients, ${request.dataSize} B payload, pipeline ${request.pipeline}`,
+    terminalLineCount
+  };
+}
 
 function mergeError(current: BenchmarkRun | null, message: string): BenchmarkRun | null {
   if (!current) {
@@ -52,6 +79,7 @@ export function Benchmarks() {
   const [busy, setBusy] = useState(false);
   const [activeRun, setActiveRun] = useState<BenchmarkRun | null>(null);
   const [consoleEvents, setConsoleEvents] = useState<BenchmarkEventEnvelope[]>([]);
+  const [terminalLineCount, setTerminalLineCount] = useState(0);
   const activeRunIdRef = useRef<string | null>(null);
   const refreshInFlightRef = useRef(false);
   const refreshPendingRef = useRef(false);
@@ -104,6 +132,7 @@ export function Benchmarks() {
             return;
           }
 
+          setTerminalLineCount((current) => current + 1);
           setConsoleEvents((current) => [...current.slice(-23), payload]);
           await refreshRunDetail(payload.runId);
         });
@@ -143,6 +172,7 @@ export function Benchmarks() {
       const startedRun = await startBenchmark(buildBenchmarkRequest(formValues));
       setActiveRun(startedRun);
       setConsoleEvents([]);
+      setTerminalLineCount(0);
     } catch (error) {
       const rawMessage = error instanceof Error ? error.message : "Unable to start benchmark";
       const message = formatBenchmarkStartError(
@@ -195,6 +225,8 @@ export function Benchmarks() {
     ],
     [activeRun, formValues.host, formValues.port]
   );
+
+  const phase2aHelper = buildPhase2aHelper(activeRun, terminalLineCount);
 
   return (
     <section className="page">
@@ -252,6 +284,33 @@ export function Benchmarks() {
         <RunConsole activeRunId={activeRun?.id ?? null} events={consoleEvents} />
 
         <div className="benchmark-terminal-layout__sidebar">
+          {phase2aHelper ? (
+            <article className="panel panel--stacked benchmark-panel">
+              <p className="panel__label">Experiment helper</p>
+              <h2>Phase 2A capture</h2>
+              <p>
+                Lightweight suggestions make it easier to tag terminal-first runs
+                for later Phase 2A comparison without treating the GUI as the
+                source of truth.
+              </p>
+
+              <dl className="server-kv-list">
+                <div>
+                  <dt>Suggested label</dt>
+                  <dd>{phase2aHelper.comparisonLabel}</dd>
+                </div>
+                <div>
+                  <dt>Workload</dt>
+                  <dd>{phase2aHelper.workloadSummary}</dd>
+                </div>
+                <div>
+                  <dt>Capture</dt>
+                  <dd>{formatTerminalLineCount(phase2aHelper.terminalLineCount)}</dd>
+                </div>
+              </dl>
+            </article>
+          ) : null}
+
           <MetricsCards run={activeRun} />
           <ResultCharts run={activeRun} />
         </div>

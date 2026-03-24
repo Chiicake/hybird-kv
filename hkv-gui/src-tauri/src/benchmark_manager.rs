@@ -572,6 +572,19 @@ mod tests {
         assert!(completed_lifecycle.message.is_none());
         assert!(completed_lifecycle.error.is_none());
         assert_eq!(manager.list_runs()[0].status, "completed");
+
+        for _ in 0..20 {
+            if persisted
+                .lock()
+                .expect("persisted runs mutex poisoned")
+                .len()
+                == 1
+            {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
         assert_eq!(
             persisted
                 .lock()
