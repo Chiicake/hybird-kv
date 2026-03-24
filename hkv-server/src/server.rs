@@ -463,7 +463,9 @@ where
     F: FnOnce() -> Vec<u8>,
 {
     let response = dispatch();
-    if !is_error_response(&response) && let Some(sink) = sink {
+    if !is_error_response(&response)
+        && let Some(sink) = sink
+    {
         for event in events {
             sink.record_observation(event);
         }
@@ -585,7 +587,9 @@ fn finish_tracked_request(
 }
 
 fn reap_connection_task(join_result: Result<std::io::Result<()>, tokio::task::JoinError>) {
-    if let Err(join_error) = join_result && join_error.is_panic() {
+    if let Err(join_error) = join_result
+        && join_error.is_panic()
+    {
         std::panic::resume_unwind(join_error.into_panic());
     }
 }
@@ -677,8 +681,7 @@ fn with_keepalive_retries(keepalive: TcpKeepalive, _: u32) -> TcpKeepalive {
 }
 
 fn eq_ignore_ascii_case(a: &[u8], b: &[u8]) -> bool {
-    a.len() == b.len()
-        && a.iter().zip(b).all(|(x, y)| x.eq_ignore_ascii_case(y))
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.eq_ignore_ascii_case(y))
 }
 
 fn parse_u64(arg: &[u8]) -> Result<u64, Vec<u8>> {

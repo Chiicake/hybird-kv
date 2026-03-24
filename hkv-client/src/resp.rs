@@ -152,11 +152,7 @@ fn parse_i64(data: &[u8]) -> ClientResult<i64> {
         idx += 1;
     }
 
-    if negative {
-        Ok(-value)
-    } else {
-        Ok(value)
-    }
+    if negative { Ok(-value) } else { Ok(value) }
 }
 
 fn push_usize(out: &mut Vec<u8>, mut value: usize) {

@@ -475,7 +475,9 @@ impl MemoryEngine {
 
         if let Some(&idx) = inner.map.get(key_arc.as_ref()) {
             let remove = inner.nodes[idx].as_ref().map(|node| node.is_expired(now));
-            if remove.unwrap_or(false) && let Some(size) = inner.remove_idx(idx) {
+            if remove.unwrap_or(false)
+                && let Some(size) = inner.remove_idx(idx)
+            {
                 self.used_bytes.fetch_sub(size, Ordering::Relaxed);
             }
         }
