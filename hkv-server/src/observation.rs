@@ -4,6 +4,7 @@
 //! reshape the recorder abstraction, but these event fields are chosen to align
 //! with the expected access-event shape and minimize churn later.
 
+use std::sync::Mutex;
 use std::time::SystemTime;
 
 pub(crate) mod exact;
@@ -34,7 +35,24 @@ pub struct ObservationEvent {
 }
 
 pub trait ExperimentObservationSink {
-    fn record_observation(&mut self, event: ObservationEvent);
+    fn record_observation(&self, event: ObservationEvent);
+}
+
+#[derive(Debug, Default)]
+pub struct SharedObservationLog {
+    events: Mutex<Vec<ObservationEvent>>,
+}
+
+impl SharedObservationLog {
+    pub fn observations(&self) -> Vec<ObservationEvent> {
+        self.events.lock().unwrap().clone()
+    }
+}
+
+impl ExperimentObservationSink for SharedObservationLog {
+    fn record_observation(&self, event: ObservationEvent) {
+        self.events.lock().unwrap().push(event);
+    }
 }
 
 impl ObservationEvent {
@@ -114,11 +132,11 @@ mod tests {
             UNIX_EPOCH + Duration::from_secs(2),
         );
 
-        let mut log = ExactObservationLog::default();
-        log.record(first.clone());
-        log.record(second.clone());
+        let log = ExactObservationLog::default();
+        log.record_observation(first.clone());
+        log.record_observation(second.clone());
 
-        assert_eq!(log.events(), &[first, second]);
+        assert_eq!(log.events(), vec![first, second]);
     }
 
     #[test]
@@ -134,8 +152,8 @@ mod tests {
     #[test]
     fn provisional_observation_sink_can_feed_exact_counter() {
         let timestamp = UNIX_EPOCH + Duration::from_secs(31);
-        let mut counter = ExactObservationCounter::default();
-        let sink: &mut dyn ExperimentObservationSink = &mut counter;
+        let counter = ExactObservationCounter::default();
+        let sink: &dyn ExperimentObservationSink = &counter;
 
         sink.record_observation(ObservationEvent::read(
             CommandKind::Get,
