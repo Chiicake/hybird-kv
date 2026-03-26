@@ -1,5 +1,11 @@
-use hkv_server::phase2a_testing::{
-    CommandKind, ExactHotKey, ExactHotnessEvaluator, ObservationEvent,
+#[path = "support/workloads.rs"]
+mod workloads;
+
+use hkv_server::phase2a_testing::{ExactHotKey, ExactHotnessEvaluator, ObservationEvent};
+use workloads::{
+    bursty_spike_workload, near_uniform_weak_signal_workload, stable_sustained_skew_windows,
+    temporal_shift_workload_first_window, temporal_shift_workload_second_window,
+    zipf_like_skew_workload,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -164,10 +170,6 @@ fn phase2a_stability_retains_only_recent_captures_and_clears_window_state() {
     );
 }
 
-fn observed_read(command: CommandKind, key: &[u8]) -> ObservationEvent {
-    ObservationEvent::read(command, key.to_vec(), std::time::UNIX_EPOCH)
-}
-
 fn run_sustained_stability_harness(
     windows: Vec<Vec<ObservationEvent>>,
     retained_captures: usize,
@@ -208,7 +210,7 @@ fn run_sustained_stability_harness(
     }
 }
 
-fn evaluate_workload(events: Vec<ObservationEvent>, limit: usize) -> Vec<ExactHotKey> {
+pub(crate) fn evaluate_workload(events: Vec<ObservationEvent>, limit: usize) -> Vec<ExactHotKey> {
     ExactHotnessEvaluator::from_events(events).top_keys(limit)
 }
 
@@ -270,70 +272,4 @@ fn assert_top_keys_in_current_evaluator_order(
         actual, expected,
         "ordering follows current evaluator semantics: total accesses, then read/write split, then key bytes"
     );
-}
-
-fn zipf_like_skew_workload() -> Vec<ObservationEvent> {
-    repeated_reads(b"zipf-0", 12)
-        .into_iter()
-        .chain(repeated_reads(b"zipf-1", 6))
-        .chain(repeated_reads(b"zipf-2", 3))
-        .chain(repeated_reads(b"zipf-3", 1))
-        .collect()
-}
-
-fn temporal_shift_workload_first_window() -> Vec<ObservationEvent> {
-    repeated_reads(b"shift-a", 8)
-        .into_iter()
-        .chain(repeated_reads(b"shift-b", 2))
-        .chain(repeated_reads(b"steady", 2))
-        .collect()
-}
-
-fn temporal_shift_workload_second_window() -> Vec<ObservationEvent> {
-    repeated_reads(b"shift-b", 8)
-        .into_iter()
-        .chain(repeated_reads(b"shift-a", 2))
-        .chain(repeated_reads(b"steady", 2))
-        .collect()
-}
-
-fn bursty_spike_workload() -> Vec<ObservationEvent> {
-    repeated_reads(b"baseline-a", 2)
-        .into_iter()
-        .chain(repeated_reads(b"baseline-b", 2))
-        .chain(repeated_reads(b"background", 2))
-        .chain(repeated_reads(b"spike", 10))
-        .chain(repeated_reads(b"baseline-a", 2))
-        .chain(repeated_reads(b"baseline-b", 2))
-        .chain(repeated_reads(b"background", 2))
-        .collect()
-}
-
-fn near_uniform_weak_signal_workload() -> Vec<ObservationEvent> {
-    repeated_reads(b"weak-a", 3)
-        .into_iter()
-        .chain(repeated_reads(b"weak-b", 3))
-        .chain(repeated_reads(b"weak-c", 3))
-        .chain(repeated_reads(b"weak-d", 2))
-        .chain(repeated_reads(b"weak-e", 2))
-        .collect()
-}
-
-fn stable_sustained_skew_windows(window_count: usize) -> Vec<Vec<ObservationEvent>> {
-    (0..window_count).map(|_| sustained_skew_window()).collect()
-}
-
-fn sustained_skew_window() -> Vec<ObservationEvent> {
-    repeated_reads(b"stable-hot", 24)
-        .into_iter()
-        .chain(repeated_reads(b"steady-warm", 8))
-        .chain(repeated_reads(b"cold-a", 4))
-        .chain(repeated_reads(b"cold-b", 4))
-        .collect()
-}
-
-fn repeated_reads(key: &[u8], count: usize) -> Vec<ObservationEvent> {
-    (0..count)
-        .map(|_| observed_read(CommandKind::Get, key))
-        .collect()
 }

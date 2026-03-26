@@ -11,14 +11,12 @@ use hkv_server::tracker::{HotTracker, TrackerConfig};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
-async fn spawn_test_server()
--> std::io::Result<(SocketAddr, Arc<Mutex<HotTracker>>, oneshot::Sender<()>)> {
-    let listener = TcpListener::bind("127.0.0.1:0").await?;
-    let addr = listener.local_addr()?;
+#[path = "support/hotness_workload_support.rs"]
+mod support;
 
-    let engine = Arc::new(MemoryEngine::new());
-    let metrics = Arc::new(Metrics::new());
-    let tracker = Arc::new(Mutex::new(HotTracker::new(TrackerConfig {
+async fn spawn_test_server()
+-> std::io::Result<(std::net::SocketAddr, Arc<Mutex<HotTracker>>, oneshot::Sender<()>)> {
+    support::spawn_tracker_server(TrackerConfig {
         candidate_limit: 8,
         max_value_size: 1024,
         registry_capacity: 64,
@@ -29,32 +27,8 @@ async fn spawn_test_server()
         min_recent_accesses: 1,
         min_read_ratio_percent: 0,
         max_idle_age: Duration::from_secs(120),
-    })));
-    let expirer = engine.start_expirer(Duration::from_millis(50));
-
-    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-    let server_metrics = Arc::clone(&metrics);
-    let server_tracker = Arc::clone(&tracker);
-
-    tokio::spawn(async move {
-        let mut expirer = Some(expirer);
-        let _ = server::serve_with_shutdown_and_tracker(
-            listener,
-            engine,
-            server_metrics,
-            server_tracker,
-            async {
-                let _ = shutdown_rx.await;
-            },
-        )
-        .await;
-
-        if let Some(handle) = expirer.take() {
-            handle.stop();
-        }
-    });
-
-    Ok((addr, tracker, shutdown_tx))
+    })
+    .await
 }
 
 fn send_raw(addr: SocketAddr, request: &[u8]) -> std::io::Result<Vec<u8>> {
