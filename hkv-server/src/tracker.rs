@@ -1,5 +1,10 @@
-use std::cmp::Reverse;
+mod cms;
+mod registry;
+
 use std::time::SystemTime;
+
+use self::cms::CountMinSketch;
+use self::registry::BoundedKeyRegistry;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccessOp {
@@ -11,6 +16,10 @@ pub enum AccessOp {
 pub struct TrackerConfig {
     pub candidate_limit: usize,
     pub max_value_size: usize,
+    pub registry_capacity: usize,
+    pub max_key_bytes: usize,
+    pub cms_width: usize,
+    pub cms_depth: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,20 +56,6 @@ impl CandidateSnapshot {
             .filter(|candidate| candidate.is_eligible())
             .count()
     }
-
-    pub fn ordered_candidates(&self) -> Vec<HotCandidate> {
-        let mut candidates = self.candidates.clone();
-        candidates.sort_by(|left, right| {
-            Reverse(left.estimated_total_accesses)
-                .cmp(&Reverse(right.estimated_total_accesses))
-                .then_with(|| {
-                    Reverse(left.estimated_read_accesses)
-                        .cmp(&Reverse(right.estimated_read_accesses))
-                })
-                .then_with(|| left.key.cmp(&right.key))
-        });
-        candidates
-    }
 }
 
 impl Default for CandidateSnapshot {
@@ -81,13 +76,19 @@ impl Default for CandidateSnapshot {
 pub struct HotTracker {
     config: TrackerConfig,
     latest_snapshot: CandidateSnapshot,
+    _estimator: CountMinSketch,
+    _registry: BoundedKeyRegistry,
 }
 
 impl HotTracker {
     pub fn new(config: TrackerConfig) -> Self {
+        let estimator = CountMinSketch::new(config.cms_width, config.cms_depth);
+        let registry = BoundedKeyRegistry::new(config.registry_capacity, config.max_key_bytes);
         Self {
             config,
             latest_snapshot: CandidateSnapshot::default(),
+            _estimator: estimator,
+            _registry: registry,
         }
     }
 
@@ -116,48 +117,6 @@ mod tests {
         assert_eq!(snapshot.observed_total_accesses, 0);
         assert_eq!(snapshot.eligible_candidate_count(), 0);
         assert!(snapshot.candidates.is_empty());
-    }
-
-    #[test]
-    fn candidate_ordering_prefers_hotter_read_heavy_keys_then_key_bytes() {
-        let snapshot = CandidateSnapshot {
-            generated_at: UNIX_EPOCH + Duration::from_secs(5),
-            observed_total_accesses: 42,
-            candidates: vec![
-                HotCandidate {
-                    key: b"beta".to_vec(),
-                    estimated_total_accesses: 8,
-                    estimated_read_accesses: 8,
-                    last_known_value_size: Some(32),
-                    ineligible_reason: None,
-                },
-                HotCandidate {
-                    key: b"alpha".to_vec(),
-                    estimated_total_accesses: 9,
-                    estimated_read_accesses: 6,
-                    last_known_value_size: Some(32),
-                    ineligible_reason: None,
-                },
-                HotCandidate {
-                    key: b"aardvark".to_vec(),
-                    estimated_total_accesses: 8,
-                    estimated_read_accesses: 8,
-                    last_known_value_size: Some(32),
-                    ineligible_reason: None,
-                },
-            ],
-        };
-
-        let ordered: Vec<Vec<u8>> = snapshot
-            .ordered_candidates()
-            .into_iter()
-            .map(|candidate| candidate.key)
-            .collect();
-
-        assert_eq!(
-            ordered,
-            vec![b"alpha".to_vec(), b"aardvark".to_vec(), b"beta".to_vec()]
-        );
     }
 
     #[test]
@@ -234,6 +193,10 @@ mod tests {
         let config = TrackerConfig {
             candidate_limit: 16,
             max_value_size: 1024,
+            registry_capacity: 64,
+            max_key_bytes: 256,
+            cms_width: 128,
+            cms_depth: 4,
         };
         let tracker = HotTracker::new(config.clone());
 
