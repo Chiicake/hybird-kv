@@ -1,7 +1,12 @@
 #[path = "support/workloads.rs"]
 mod workloads;
 
+#[path = "support/hotness_workload_support.rs"]
+mod harness;
+
+use hkv_client::KVClient;
 use hkv_server::phase2a_testing::{ExactHotKey, ExactHotnessEvaluator, ObservationEvent};
+use hkv_server::tracker::HotCandidate;
 use workloads::{
     bursty_spike_workload, near_uniform_weak_signal_workload, stable_sustained_skew_windows,
     temporal_shift_workload_first_window, temporal_shift_workload_second_window,
@@ -22,6 +27,22 @@ struct SustainedStabilityReport {
     total_events_seen: usize,
     current_window_events: usize,
     captures: Vec<StabilityCapture>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CandidateStabilityCapture {
+    capture_index: usize,
+    window_events_before_reset: usize,
+    reset_from_event_count: usize,
+    window_events_after_reset: usize,
+    snapshot_candidates: Vec<HotCandidate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CandidateSustainedStabilityReport {
+    total_events_seen: usize,
+    current_window_events: usize,
+    captures: Vec<CandidateStabilityCapture>,
 }
 
 #[derive(Debug, Default)]
@@ -170,6 +191,38 @@ fn phase2a_stability_retains_only_recent_captures_and_clears_window_state() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn phase2a_stability_reuses_sustained_skew_workflow_for_candidate_export_validation() {
+    let report = run_candidate_sustained_stability_harness(stable_sustained_skew_windows(3), 3, 3)
+        .await;
+
+    assert_eq!(report.current_window_events, 0);
+    assert_candidate_window_state_cleared(&report.captures, 40);
+    assert_candidate_capture_head(
+        &report.captures[0],
+        &[(b"stable-hot".as_slice(), 24), (b"steady-warm".as_slice(), 8)],
+    );
+    assert_candidate_capture_head(
+        &report.captures[1],
+        &[(b"stable-hot".as_slice(), 48), (b"steady-warm".as_slice(), 16)],
+    );
+    assert_candidate_capture_head(
+        &report.captures[2],
+        &[(b"stable-hot".as_slice(), 72), (b"steady-warm".as_slice(), 24)],
+    );
+
+    for capture in &report.captures {
+        println!(
+            "CANDIDATE_EXPORT_STABILITY capture={} window_events={} candidate_count={} head_key={} head_total_accesses={}",
+            capture.capture_index,
+            capture.window_events_before_reset,
+            capture.snapshot_candidates.len(),
+            String::from_utf8_lossy(&capture.snapshot_candidates[0].key),
+            capture.snapshot_candidates[0].estimated_total_accesses,
+        );
+    }
+}
+
 fn run_sustained_stability_harness(
     windows: Vec<Vec<ObservationEvent>>,
     retained_captures: usize,
@@ -210,6 +263,57 @@ fn run_sustained_stability_harness(
     }
 }
 
+async fn run_candidate_sustained_stability_harness(
+    windows: Vec<Vec<ObservationEvent>>,
+    retained_captures: usize,
+    top_keys_limit: usize,
+) -> CandidateSustainedStabilityReport {
+    let (addr, _tracker, shutdown) = harness::spawn_tracker_server(
+        harness::default_tracker_config(std::time::Duration::from_secs(30)),
+    )
+    .await
+    .unwrap();
+    let client = KVClient::connect(addr.to_string()).unwrap();
+    let mut captures = Vec::new();
+    let mut total_events_seen = 0;
+    let mut window_accumulator = WindowAccumulator::default();
+
+    for (capture_index, window) in windows.into_iter().enumerate() {
+        for event in window {
+            window_accumulator.record_event();
+            harness::apply_event(&client, &event);
+            total_events_seen += 1;
+        }
+
+        let window_events_before_reset = window_accumulator.event_count();
+        let reset_from_event_count = window_accumulator.reset();
+        let snapshot_candidates = harness::read_snapshot_candidates(&client)
+            .into_iter()
+            .take(top_keys_limit)
+            .collect();
+        captures.push(CandidateStabilityCapture {
+            capture_index,
+            window_events_before_reset,
+            reset_from_event_count,
+            window_events_after_reset: window_accumulator.event_count(),
+            snapshot_candidates,
+        });
+
+        if captures.len() > retained_captures {
+            let overflow = captures.len() - retained_captures;
+            captures.drain(0..overflow);
+        }
+    }
+
+    let _ = shutdown.send(());
+
+    CandidateSustainedStabilityReport {
+        total_events_seen,
+        current_window_events: window_accumulator.event_count(),
+        captures,
+    }
+}
+
 pub(crate) fn evaluate_workload(events: Vec<ObservationEvent>, limit: usize) -> Vec<ExactHotKey> {
     ExactHotnessEvaluator::from_events(events).top_keys(limit)
 }
@@ -233,6 +337,33 @@ fn assert_window_state_cleared(captures: &[StabilityCapture], expected_window_ev
         assert_eq!(capture.window_events_before_reset, expected_window_events);
         assert_eq!(capture.reset_from_event_count, expected_window_events);
         assert_eq!(capture.window_events_after_reset, 0);
+    }
+}
+
+fn assert_candidate_window_state_cleared(
+    captures: &[CandidateStabilityCapture],
+    expected_window_events: usize,
+) {
+    for capture in captures {
+        assert_eq!(capture.window_events_before_reset, expected_window_events);
+        assert_eq!(capture.reset_from_event_count, expected_window_events);
+        assert_eq!(capture.window_events_after_reset, 0);
+    }
+}
+
+fn assert_candidate_capture_head(
+    capture: &CandidateStabilityCapture,
+    expected: &[(&[u8], u64)],
+) {
+    assert!(capture.snapshot_candidates.len() >= expected.len(), "{capture:#?}");
+
+    for (index, (key, total_accesses)) in expected.iter().enumerate() {
+        assert_eq!(capture.snapshot_candidates[index].key, key.to_vec(), "{capture:#?}");
+        assert_eq!(
+            capture.snapshot_candidates[index].estimated_total_accesses,
+            *total_accesses,
+            "{capture:#?}"
+        );
     }
 }
 
