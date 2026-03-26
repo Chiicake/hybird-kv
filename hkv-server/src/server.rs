@@ -1125,6 +1125,7 @@ mod tests {
             &engine,
             &metrics,
             None,
+            None,
         );
 
         assert_eq!(response, b"+OK\r\n");
@@ -1147,6 +1148,7 @@ mod tests {
             &[b"SET".to_vec(), b"key".to_vec(), b"value".to_vec()],
             &engine,
             &metrics,
+            None,
             None,
         );
 
@@ -1176,6 +1178,7 @@ mod tests {
             &[b"SET".to_vec(), b"key".to_vec(), b"value".to_vec()],
             &engine,
             &metrics,
+            None,
             Some(&observation_log),
         );
 

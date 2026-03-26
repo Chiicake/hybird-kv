@@ -1,14 +1,18 @@
 use std::io::{Read, Write};
 use std::mem::size_of;
 use std::net::{Shutdown, SocketAddr, TcpStream as StdTcpStream};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use hkv_client::{ClientTtl, KVClient};
 use hkv_engine::MemoryEngine;
 use hkv_server::metrics::Metrics;
+#[path = "support/hotness_workload_support.rs"]
+mod harness;
+
 use hkv_server::phase2a_testing::{AccessClass, CommandKind, SharedObservationLog};
 use hkv_server::server;
+use hkv_server::tracker::{HotTracker, TrackerConfig};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
@@ -135,6 +139,33 @@ struct OverheadComparison {
     latency_delta_pct: f64,
     throughput_delta_pct: f64,
     runtime_delta_pct: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TrackerOverheadReport {
+    warmup_snapshot_publishes: usize,
+    measured_snapshot_publishes: usize,
+    latest_candidate_count: usize,
+    latest_observed_total_accesses: u64,
+}
+
+async fn spawn_tracker_server()
+-> std::io::Result<(SocketAddr, Arc<Mutex<HotTracker>>, oneshot::Sender<()>)> {
+    harness::spawn_tracker_server(harness::default_tracker_config(Duration::from_secs(30))).await
+}
+
+fn capture_tracker_overhead_report(
+    tracker: &Arc<Mutex<HotTracker>>,
+    config: OverheadWorkflowConfig,
+) -> TrackerOverheadReport {
+    let snapshot = tracker.lock().unwrap().latest_snapshot();
+
+    TrackerOverheadReport {
+        warmup_snapshot_publishes: config.warmup_runs,
+        measured_snapshot_publishes: config.measured_runs,
+        latest_candidate_count: snapshot.candidates.len(),
+        latest_observed_total_accesses: snapshot.observed_total_accesses,
+    }
 }
 
 async fn run_overhead_workload(
@@ -458,6 +489,55 @@ async fn overhead_workflow_reports_baseline_and_observed_server_runs() {
     assert_eq!(
         observed_events.last().map(|event| event.command),
         Some(CommandKind::Get)
+    );
+    assert!(comparison.latency_delta_pct.is_finite());
+    assert!(comparison.runtime_delta_pct.is_finite());
+    assert!(comparison.throughput_delta_pct.is_finite());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn overhead_workflow_reports_candidate_export_signals_for_tracker_server_runs() {
+    let config = OverheadWorkflowConfig {
+        workload: OverheadWorkloadConfig {
+            workers: 4,
+            rounds_per_worker: 32,
+        },
+        warmup_runs: 1,
+        measured_runs: 2,
+    };
+
+    let (baseline_addr, baseline_shutdown) = spawn_baseline_server().await.unwrap();
+    let baseline_runs = run_overhead_series(baseline_addr, config).await;
+    let _ = baseline_shutdown.send(());
+
+    let (tracker_addr, tracker, tracker_shutdown) = spawn_tracker_server().await.unwrap();
+    let tracker_runs = run_overhead_series(tracker_addr, config).await;
+    let tracker_report = capture_tracker_overhead_report(&tracker, config);
+    let _ = tracker_shutdown.send(());
+
+    let baseline = summarize_runs(&baseline_runs);
+    let tracker_summary = summarize_runs(&tracker_runs);
+    let comparison = compare_runs(baseline, tracker_summary);
+
+    println!(
+        "CANDIDATE_EXPORT_OVERHEAD tracker_enabled=1 warmup_candidate_snapshots={} measured_candidate_snapshots={} candidate_count={} observed_total_accesses={} latency_delta_pct={:.2} runtime_delta_pct={:.2} throughput_delta_pct={:.2}",
+        tracker_report.warmup_snapshot_publishes,
+        tracker_report.measured_snapshot_publishes,
+        tracker_report.latest_candidate_count,
+        tracker_report.latest_observed_total_accesses,
+        comparison.latency_delta_pct,
+        comparison.runtime_delta_pct,
+        comparison.throughput_delta_pct,
+    );
+
+    assert_eq!(baseline_runs.len(), config.measured_runs);
+    assert_eq!(tracker_runs.len(), config.measured_runs);
+    assert_eq!(tracker_report.warmup_snapshot_publishes, config.warmup_runs);
+    assert_eq!(tracker_report.measured_snapshot_publishes, config.measured_runs);
+    assert!(tracker_report.latest_candidate_count > 0, "{tracker_report:#?}");
+    assert!(
+        tracker_report.latest_observed_total_accesses >= config.total_ops_per_run() as u64,
+        "{tracker_report:#?}"
     );
     assert!(comparison.latency_delta_pct.is_finite());
     assert!(comparison.runtime_delta_pct.is_finite());
