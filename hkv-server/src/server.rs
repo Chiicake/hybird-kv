@@ -5,6 +5,7 @@
 
 use std::future::Future;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime};
 
 use bytes::BytesMut;
@@ -17,9 +18,10 @@ use hkv_engine::{KVEngine, TtlStatus};
 
 use crate::metrics::Metrics;
 use crate::observation::{
-    CommandKind, ExperimentObservationSink, ObservationEvent, SharedObservationLog,
+    AccessClass, CommandKind, ExperimentObservationSink, ObservationEvent, SharedObservationLog,
 };
 use crate::protocol::{RespError, RespParser};
+use crate::tracker::{AccessOp, HotTracker};
 
 const DEFAULT_SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_KEEPALIVE_TIME: Duration = Duration::from_secs(30);
@@ -88,6 +90,29 @@ where
     .await
 }
 
+pub async fn serve_with_shutdown_and_tracker<E, F>(
+    listener: tokio::net::TcpListener,
+    engine: Arc<E>,
+    metrics: Arc<Metrics>,
+    tracker: Arc<Mutex<HotTracker>>,
+    shutdown: F,
+) -> std::io::Result<()>
+where
+    E: KVEngine + 'static,
+    F: Future<Output = ()>,
+{
+    serve_with_shutdown_with_observation_and_tracker(
+        listener,
+        engine,
+        metrics,
+        None,
+        Some(tracker),
+        shutdown,
+        DEFAULT_SERVER_CONFIG,
+    )
+    .await
+}
+
 /// Handles a single TCP client connection.
 pub async fn handle_connection<E>(stream: TcpStream, engine: Arc<E>) -> std::io::Result<()>
 where
@@ -108,7 +133,10 @@ where
     E: KVEngine + 'static,
     F: Future<Output = ()>,
 {
-    serve_with_shutdown_with_observation(listener, engine, metrics, None, shutdown, config).await
+    serve_with_shutdown_with_observation_and_tracker(
+        listener, engine, metrics, None, None, shutdown, config,
+    )
+    .await
 }
 
 async fn serve_with_shutdown_with_observation<E, F>(
@@ -116,6 +144,31 @@ async fn serve_with_shutdown_with_observation<E, F>(
     engine: Arc<E>,
     metrics: Arc<Metrics>,
     observation_log: Option<Arc<SharedObservationLog>>,
+    shutdown: F,
+    config: ServerConfig,
+) -> std::io::Result<()>
+where
+    E: KVEngine + 'static,
+    F: Future<Output = ()>,
+{
+    serve_with_shutdown_with_observation_and_tracker(
+        listener,
+        engine,
+        metrics,
+        observation_log,
+        None,
+        shutdown,
+        config,
+    )
+    .await
+}
+
+async fn serve_with_shutdown_with_observation_and_tracker<E, F>(
+    listener: tokio::net::TcpListener,
+    engine: Arc<E>,
+    metrics: Arc<Metrics>,
+    observation_log: Option<Arc<SharedObservationLog>>,
+    tracker: Option<Arc<Mutex<HotTracker>>>,
     shutdown: F,
     config: ServerConfig,
 ) -> std::io::Result<()>
@@ -139,8 +192,16 @@ where
                 let engine = Arc::clone(&engine);
                 let metrics = Arc::clone(&metrics);
                 let observation_log = observation_log.as_ref().map(Arc::clone);
+                let tracker = tracker.as_ref().map(Arc::clone);
                 connections.spawn(async move {
-                    handle_connection_with_observation(stream, engine, metrics, observation_log).await
+                    handle_connection_with_observation_and_tracker(
+                        stream,
+                        engine,
+                        metrics,
+                        observation_log,
+                        tracker,
+                    )
+                    .await
                 });
             }
         }
@@ -176,7 +237,7 @@ pub async fn handle_connection_with_metrics<E>(
 where
     E: KVEngine,
 {
-    handle_connection_with_observation(stream, engine, metrics, None).await
+    handle_connection_with_observation_and_tracker(stream, engine, metrics, None, None).await
 }
 
 pub async fn handle_connection_with_observation<E>(
@@ -184,6 +245,20 @@ pub async fn handle_connection_with_observation<E>(
     engine: Arc<E>,
     metrics: Arc<Metrics>,
     observation_log: Option<Arc<SharedObservationLog>>,
+) -> std::io::Result<()>
+where
+    E: KVEngine,
+{
+    handle_connection_with_observation_and_tracker(stream, engine, metrics, observation_log, None)
+        .await
+}
+
+async fn handle_connection_with_observation_and_tracker<E>(
+    stream: TcpStream,
+    engine: Arc<E>,
+    metrics: Arc<Metrics>,
+    observation_log: Option<Arc<SharedObservationLog>>,
+    tracker: Option<Arc<Mutex<HotTracker>>>,
 ) -> std::io::Result<()>
 where
     E: KVEngine,
@@ -203,11 +278,17 @@ where
                 Ok(Some(args)) => {
                     metrics.record_request_start();
                     let started_at = Instant::now();
+                    let observation_sink = observation_sink(
+                        observation_log.as_deref(),
+                        tracker.as_deref(),
+                    );
                     let response = dispatch_command(
                         &args,
                         engine.as_ref(),
                         metrics.as_ref(),
-                        observation_log_sink(observation_log.as_deref()),
+                        observation_sink
+                            .as_ref()
+                            .map(|sink| sink as &dyn ExperimentObservationSink),
                     );
                     let write_result = stream.write_all(&response).await;
                     finish_tracked_request(metrics.as_ref(), started_at, &response, write_result)?;
@@ -243,27 +324,27 @@ fn dispatch_command(
         return handle_ping(args);
     }
     if eq_ignore_ascii_case(cmd, b"GET") {
-        return observe_command_result(observation_sink, planned_observations(args), || {
+        return observe_command_result(observation_sink, planned_observations(observation_sink, args), || {
             handle_get(args, engine)
         });
     }
     if eq_ignore_ascii_case(cmd, b"SET") {
-        return observe_command_result(observation_sink, planned_observations(args), || {
+        return observe_command_result(observation_sink, planned_observations(observation_sink, args), || {
             handle_set(args, engine)
         });
     }
     if eq_ignore_ascii_case(cmd, b"DEL") {
-        return observe_command_result(observation_sink, planned_observations(args), || {
+        return observe_command_result(observation_sink, planned_observations(observation_sink, args), || {
             handle_del(args, engine)
         });
     }
     if eq_ignore_ascii_case(cmd, b"EXPIRE") {
-        return observe_command_result(observation_sink, planned_observations(args), || {
+        return observe_command_result(observation_sink, planned_observations(observation_sink, args), || {
             handle_expire(args, engine)
         });
     }
     if eq_ignore_ascii_case(cmd, b"TTL") {
-        return observe_command_result(observation_sink, planned_observations(args), || {
+        return observe_command_result(observation_sink, planned_observations(observation_sink, args), || {
             handle_ttl(args, engine)
         });
     }
@@ -473,7 +554,13 @@ where
     response
 }
 
-fn planned_observations(args: &[Vec<u8>]) -> Vec<ObservationEvent> {
+fn planned_observations(
+    sink: Option<&dyn ExperimentObservationSink>,
+    args: &[Vec<u8>],
+) -> Vec<ObservationEvent> {
+    if sink.is_none() {
+        return Vec::new();
+    }
     if args.is_empty() {
         return Vec::new();
     }
@@ -548,10 +635,38 @@ fn planned_observations(args: &[Vec<u8>]) -> Vec<ObservationEvent> {
     Vec::new()
 }
 
-fn observation_log_sink(
-    log: Option<&SharedObservationLog>,
-) -> Option<&dyn ExperimentObservationSink> {
-    log.map(|log| log as &dyn ExperimentObservationSink)
+fn observation_sink<'a>(
+    log: Option<&'a SharedObservationLog>,
+    tracker: Option<&'a Mutex<HotTracker>>,
+) -> Option<CompositeObservationSink<'a>> {
+    if log.is_none() && tracker.is_none() {
+        return None;
+    }
+
+    Some(CompositeObservationSink { log, tracker })
+}
+
+struct CompositeObservationSink<'a> {
+    log: Option<&'a SharedObservationLog>,
+    tracker: Option<&'a Mutex<HotTracker>>,
+}
+
+impl ExperimentObservationSink for CompositeObservationSink<'_> {
+    fn record_observation(&self, event: ObservationEvent) {
+        if let Some(log) = self.log {
+            log.record_observation(event.clone());
+        }
+
+        if let Some(tracker) = self.tracker {
+            let mut tracker = tracker.lock().unwrap();
+            let op = match event.access {
+                AccessClass::Read => AccessOp::Read,
+                AccessClass::Write => AccessOp::Write,
+            };
+            tracker.record_access(&event.key, op, event.timestamp, event.value_size);
+            tracker.publish_snapshot(event.timestamp);
+        }
+    }
 }
 
 fn is_error_response(response: &[u8]) -> bool {
@@ -997,10 +1112,11 @@ mod tests {
 
     #[test]
     fn planned_observations_skip_wrong_arity_commands() {
-        assert!(planned_observations(&[b"GET".to_vec()]).is_empty());
-        assert!(planned_observations(&[b"TTL".to_vec()]).is_empty());
-        assert!(planned_observations(&[b"DEL".to_vec()]).is_empty());
-        assert!(planned_observations(&[b"EXPIRE".to_vec(), b"key".to_vec()]).is_empty());
+        let no_sink: Option<&dyn ExperimentObservationSink> = None;
+        assert!(planned_observations(no_sink, &[b"GET".to_vec()]).is_empty());
+        assert!(planned_observations(no_sink, &[b"TTL".to_vec()]).is_empty());
+        assert!(planned_observations(no_sink, &[b"DEL".to_vec()]).is_empty());
+        assert!(planned_observations(no_sink, &[b"EXPIRE".to_vec(), b"key".to_vec()]).is_empty());
     }
 
     #[test]
