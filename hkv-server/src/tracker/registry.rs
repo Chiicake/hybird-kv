@@ -54,6 +54,10 @@ impl BoundedKeyRegistry {
         self.entries.get(key_vec.as_slice())
     }
 
+    pub(crate) fn entries(&self) -> impl Iterator<Item = &RegistryEntry> {
+        self.entries.values()
+    }
+
     fn record(&mut self, key: &[u8], seen_at: SystemTime, value_size: Option<usize>, read: bool) {
         let key_vec = clamp_key(key, self.max_key_bytes);
 

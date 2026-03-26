@@ -1,10 +1,14 @@
 mod cms;
 mod registry;
+mod selector;
+mod windows;
 
 use std::time::SystemTime;
 
 use self::cms::CountMinSketch;
 use self::registry::BoundedKeyRegistry;
+use self::selector::{select_candidates, CandidateInput};
+use self::windows::RollingWindowState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccessOp {
@@ -20,11 +24,19 @@ pub struct TrackerConfig {
     pub max_key_bytes: usize,
     pub cms_width: usize,
     pub cms_depth: usize,
+    pub window_duration: std::time::Duration,
+    pub min_recent_accesses: u64,
+    pub min_read_ratio_percent: u8,
+    pub max_idle_age: std::time::Duration,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CandidateEligibilityReason {
+    ValueSizeUnknown,
     ValueTooLarge,
+    TooFewRecentAccesses,
+    ReadRatioTooLow,
+    Stale,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,18 +87,23 @@ impl Default for CandidateSnapshot {
 #[derive(Debug, Clone)]
 pub struct HotTracker {
     config: TrackerConfig,
-    latest_snapshot: CandidateSnapshot,
+    windows: RollingWindowState,
     _estimator: CountMinSketch,
     _registry: BoundedKeyRegistry,
 }
 
 impl HotTracker {
     pub fn new(config: TrackerConfig) -> Self {
+        assert!(
+            config.window_duration > std::time::Duration::ZERO,
+            "tracker window duration must be positive"
+        );
         let estimator = CountMinSketch::new(config.cms_width, config.cms_depth);
         let registry = BoundedKeyRegistry::new(config.registry_capacity, config.max_key_bytes);
+        let windows = RollingWindowState::new(&config, SystemTime::UNIX_EPOCH);
         Self {
             config,
-            latest_snapshot: CandidateSnapshot::default(),
+            windows,
             _estimator: estimator,
             _registry: registry,
         }
@@ -97,7 +114,44 @@ impl HotTracker {
     }
 
     pub fn latest_snapshot(&self) -> CandidateSnapshot {
-        self.latest_snapshot.clone()
+        self.windows.latest_snapshot()
+    }
+
+    pub(crate) fn record_access(
+        &mut self,
+        key: &[u8],
+        op: AccessOp,
+        seen_at: SystemTime,
+        value_size: Option<usize>,
+    ) {
+        self.windows.record_access(key, op, seen_at);
+        match op {
+            AccessOp::Read => self._registry.record_read(key, seen_at),
+            AccessOp::Write => self._registry.record_write(key, seen_at, value_size),
+        }
+    }
+
+    pub(crate) fn publish_snapshot(&mut self, generated_at: SystemTime) {
+        self.windows.rotate_to(generated_at);
+        let inputs: Vec<CandidateInput> = self
+            ._registry
+            .entries()
+            .map(|entry| CandidateInput {
+                key: entry.key.clone(),
+                recent_total_accesses: self.windows.estimate_recent_total(&entry.key),
+                recent_read_accesses: self.windows.estimate_recent_reads(&entry.key),
+                last_seen: entry.last_seen,
+                last_known_value_size: entry.last_known_value_size,
+            })
+            .collect();
+
+        let candidates = select_candidates(&self.config, inputs, generated_at);
+        let observed_total_accesses = self.windows.observed_total_accesses();
+        self.windows.store_snapshot(CandidateSnapshot {
+            generated_at,
+            observed_total_accesses,
+            candidates,
+        });
     }
 }
 
@@ -106,7 +160,8 @@ mod tests {
     use std::time::{Duration, UNIX_EPOCH};
 
     use super::{
-        CandidateEligibilityReason, CandidateSnapshot, HotCandidate, HotTracker, TrackerConfig,
+        AccessOp, CandidateEligibilityReason, CandidateSnapshot, HotCandidate, HotTracker,
+        TrackerConfig,
     };
 
     #[test]
@@ -147,7 +202,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_contract_stays_serializable_with_expected_fields() {
+    fn snapshot_contract_stays_constructible_with_expected_fields() {
         let snapshot = CandidateSnapshot {
             generated_at: UNIX_EPOCH + Duration::from_secs(9),
             observed_total_accesses: 64,
@@ -197,10 +252,58 @@ mod tests {
             max_key_bytes: 256,
             cms_width: 128,
             cms_depth: 4,
+            window_duration: Duration::from_secs(30),
+            min_recent_accesses: 2,
+            min_read_ratio_percent: 50,
+            max_idle_age: Duration::from_secs(60),
         };
         let tracker = HotTracker::new(config.clone());
 
         assert_eq!(tracker.config(), &config);
         assert_eq!(tracker.latest_snapshot(), CandidateSnapshot::default());
+    }
+
+    #[test]
+    fn tracker_shell_can_record_access_and_publish_snapshot() {
+        let config = TrackerConfig {
+            candidate_limit: 16,
+            max_value_size: 1024,
+            registry_capacity: 64,
+            max_key_bytes: 256,
+            cms_width: 128,
+            cms_depth: 4,
+            window_duration: std::time::Duration::from_secs(10),
+            min_recent_accesses: 1,
+            min_read_ratio_percent: 0,
+            max_idle_age: std::time::Duration::from_secs(60),
+        };
+        let mut tracker = HotTracker::new(config);
+        let now = UNIX_EPOCH + Duration::from_secs(5);
+
+        tracker.record_access(b"alpha", AccessOp::Read, now, None);
+        tracker.record_access(b"alpha", AccessOp::Write, now, Some(64));
+        tracker.publish_snapshot(now);
+
+        let snapshot = tracker.latest_snapshot();
+        assert_eq!(snapshot.observed_total_accesses, 2);
+        assert_eq!(snapshot.candidates.len(), 1);
+        assert_eq!(snapshot.candidates[0].key, b"alpha".to_vec());
+    }
+
+    #[test]
+    #[should_panic(expected = "tracker window duration must be positive")]
+    fn tracker_rejects_zero_window_duration() {
+        let _ = HotTracker::new(TrackerConfig {
+            candidate_limit: 16,
+            max_value_size: 1024,
+            registry_capacity: 64,
+            max_key_bytes: 256,
+            cms_width: 128,
+            cms_depth: 4,
+            window_duration: std::time::Duration::ZERO,
+            min_recent_accesses: 1,
+            min_read_ratio_percent: 0,
+            max_idle_age: std::time::Duration::from_secs(60),
+        });
     }
 }
