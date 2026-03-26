@@ -286,6 +286,7 @@ where
                         &args,
                         engine.as_ref(),
                         metrics.as_ref(),
+                        tracker.as_deref(),
                         observation_sink
                             .as_ref()
                             .map(|sink| sink as &dyn ExperimentObservationSink),
@@ -313,6 +314,7 @@ fn dispatch_command(
     args: &[Vec<u8>],
     engine: &impl KVEngine,
     metrics: &Metrics,
+    tracker: Option<&Mutex<HotTracker>>,
     observation_sink: Option<&dyn ExperimentObservationSink>,
 ) -> Vec<u8> {
     if args.is_empty() {
@@ -349,7 +351,7 @@ fn dispatch_command(
         });
     }
     if eq_ignore_ascii_case(cmd, b"INFO") {
-        return handle_info(metrics);
+        return handle_info(metrics, tracker);
     }
 
     resp_error("unknown command")
@@ -455,14 +457,14 @@ fn handle_ttl(args: &[Vec<u8>], engine: &impl KVEngine) -> Vec<u8> {
     }
 }
 
-fn handle_info(metrics: &Metrics) -> Vec<u8> {
+fn handle_info(metrics: &Metrics, tracker: Option<&Mutex<HotTracker>>) -> Vec<u8> {
     let snapshot = metrics.snapshot();
     let average_us = snapshot.latency.average_us().unwrap_or(0.0);
     let p50_us = snapshot.latency.percentile_us(50.0).unwrap_or(0);
     let p90_us = snapshot.latency.percentile_us(90.0).unwrap_or(0);
     let p99_us = snapshot.latency.percentile_us(99.0).unwrap_or(0);
     let p999_us = snapshot.latency.percentile_us(99.9).unwrap_or(0);
-    let info = format!(
+    let mut info = format!(
         concat!(
             "role:master\r\n",
             "engine:hybridkv\r\n",
@@ -494,7 +496,52 @@ fn handle_info(metrics: &Metrics) -> Vec<u8> {
         p99_us,
         p999_us,
     );
+
+    append_hot_tracker_info(&mut info, tracker);
     resp_bulk(info.as_bytes())
+}
+
+fn append_hot_tracker_info(info: &mut String, tracker: Option<&Mutex<HotTracker>>) {
+    let Some(tracker) = tracker else {
+        info.push_str("hot_tracker_enabled:0\r\n");
+        return;
+    };
+
+    let snapshot = tracker.lock().unwrap().latest_snapshot();
+    info.push_str("hot_tracker_enabled:1\r\n");
+    info.push_str(&format!(
+        "hot_snapshot_observed_total_accesses:{}\r\n",
+        snapshot.observed_total_accesses
+    ));
+    info.push_str(&format!(
+        "hot_snapshot_candidate_count:{}\r\n",
+        snapshot.candidates.len()
+    ));
+
+    for (index, candidate) in snapshot.candidates.iter().enumerate() {
+        info.push_str(&format!(
+            "hot_candidate_{index}_key_hex:{}\r\n",
+            encode_hex(&candidate.key)
+        ));
+        info.push_str(&format!(
+            "hot_candidate_{index}_total_accesses:{}\r\n",
+            candidate.estimated_total_accesses
+        ));
+        info.push_str(&format!(
+            "hot_candidate_{index}_read_accesses:{}\r\n",
+            candidate.estimated_read_accesses
+        ));
+    }
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    output
 }
 
 fn resp_simple(message: &str) -> Vec<u8> {

@@ -122,3 +122,61 @@ async fn request_path_records_hot_keys() {
 
     let _ = shutdown.send(());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn snapshot_surface() {
+    let (addr, _tracker, shutdown) = spawn_test_server().await.unwrap();
+    let client = KVClient::connect(addr.to_string()).unwrap();
+
+    client.set(b"alpha", b"value-a").unwrap();
+    client.set(b"beta", b"value-b").unwrap();
+
+    for _ in 0..3 {
+        assert_eq!(client.get(b"alpha").unwrap(), Some(b"value-a".to_vec()));
+    }
+    assert_eq!(client.get(b"beta").unwrap(), Some(b"value-b".to_vec()));
+
+    let info = String::from_utf8(client.info().unwrap()).unwrap();
+
+    assert!(info.contains("hot_tracker_enabled:1"), "{info}");
+    assert!(info.contains("hot_snapshot_observed_total_accesses:6"), "{info}");
+    assert!(info.contains("hot_snapshot_candidate_count:2"), "{info}");
+    assert!(info.contains("hot_candidate_0_key_hex:616c706861"), "{info}");
+    assert!(info.contains("hot_candidate_0_total_accesses:4"), "{info}");
+    assert!(info.contains("hot_candidate_0_read_accesses:3"), "{info}");
+    assert!(info.contains("hot_candidate_1_key_hex:62657461"), "{info}");
+    assert!(info.contains("hot_candidate_1_total_accesses:2"), "{info}");
+    assert!(!info.contains("hot_candidate_2_"), "{info}");
+
+    let _ = shutdown.send(());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn snapshot_surface_reports_tracker_disabled_without_tracker_context() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let engine = Arc::new(MemoryEngine::new());
+    let metrics = Arc::new(Metrics::new());
+    let expirer = engine.start_expirer(Duration::from_millis(50));
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    tokio::spawn(async move {
+        let mut expirer = Some(expirer);
+        let _ = server::serve_with_shutdown(listener, engine, metrics, async {
+            let _ = shutdown_rx.await;
+        })
+        .await;
+
+        if let Some(handle) = expirer.take() {
+            handle.stop();
+        }
+    });
+
+    let client = KVClient::connect(addr.to_string()).unwrap();
+    let info = String::from_utf8(client.info().unwrap()).unwrap();
+
+    assert!(info.contains("hot_tracker_enabled:0"), "{info}");
+    assert!(!info.contains("hot_candidate_0_"), "{info}");
+
+    let _ = shutdown_tx.send(());
+}
